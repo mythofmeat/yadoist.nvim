@@ -1,0 +1,66 @@
+-- Small helpers for reading Todoist's task shape, kept in one place because the
+-- API is inconsistent about a few field names across versions.
+local M = {}
+
+--- Todoist stores 4 = urgent down to 1 = none. Its UI, and therefore our
+--- buffer, calls those p1..p4.
+function M.api_to_ui_priority(p)
+  p = tonumber(p) or 1
+  return 5 - math.max(1, math.min(4, p))
+end
+
+function M.ui_to_api_priority(p)
+  p = tonumber(p) or 4
+  return 5 - math.max(1, math.min(4, p))
+end
+
+--- v1 signals completion with a completed_at timestamp; older responses used a
+--- boolean under one of two names. Accept all three.
+function M.is_completed(task)
+  return task.completed_at ~= nil or task.checked == true or task.is_completed == true
+end
+
+function M.order(task)
+  return tonumber(task.child_order) or tonumber(task.order) or 0
+end
+
+--- The human string Todoist parsed the due date from ("every saturday"), which
+--- is what we want to show so it round-trips instead of collapsing to a date.
+function M.due_string(task)
+  local due = task.due
+  if type(due) ~= "table" then
+    return nil
+  end
+  if type(due.string) == "string" and due.string ~= "" then
+    return due.string
+  end
+  if type(due.date) == "string" and due.date ~= "" then
+    return due.date
+  end
+  return nil
+end
+
+--- The resolved YYYY-MM-DD, used only to decide whether something is overdue.
+function M.due_date(task)
+  local due = task.due
+  if type(due) ~= "table" or type(due.date) ~= "string" then
+    return nil
+  end
+  return due.date:sub(1, 10)
+end
+
+--- The API returns this as `inbox_project`; some responses and SDKs spell it
+--- `is_inbox_project`. Accept either.
+function M.is_inbox(project)
+  return project.inbox_project == true or project.is_inbox_project == true
+end
+
+function M.labels(task)
+  local out = {}
+  for _, l in ipairs(task.labels or {}) do
+    table.insert(out, l)
+  end
+  return out
+end
+
+return M
