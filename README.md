@@ -7,7 +7,7 @@ line to delete one — then `:w` sends it all to Todoist.
 ```markdown
 # Inbox
 
-- [ ] Buy milk @errand !p2 <tomorrow>
+- [ ] Buy milk @errand !p2 <2026-09-24>
 - [ ] Fix the leaky sink @house
   - [ ] Get the wrench back from Dave
 
@@ -122,14 +122,18 @@ untouched, so `<friday at 5pm>`, `<every 2nd tuesday>` and `<in 3 days>` all
 work, and recurring tasks keep recurring. Removing the `<...>` clears the due
 date.
 
+However a one-off date was typed, it is shown as the date it resolved to —
+`<2026-09-24>`, or `<2026-09-24 15:00>` with a time — so every date in the
+buffer reads the same way.
+
 Labels, priorities and dates are only recognised at the end of a line, so a task
 like `email bob@example.com` keeps its address instead of growing a label.
 
 ### Recurring tasks
 
-Because the buffer shows Todoist's own due *string* rather than the date it
-resolved to, a recurring task round-trips as `<every monday>` and stays
-recurring. Rendering the resolved date instead would silently flatten every
+Recurring tasks are the exception to showing the date: the buffer shows
+Todoist's own due *string* for them, so they round-trip as `<every monday>` and
+stay recurring. Rendering the resolved date would silently flatten every
 recurrence into a one-off the first time you saved.
 
 Ticking a recurring task completes the current occurrence, which is Todoist's

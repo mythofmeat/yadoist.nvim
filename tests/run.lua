@@ -159,7 +159,7 @@ do
   eq("produces the expected buffer", lines, {
     "# Inbox",
     "",
-    "- [ ] Buy milk @errand !p2 <tomorrow>",
+    "- [ ] Buy milk @errand !p2 <2099-01-01>",
     "",
     "# House Chores",
     "",
@@ -218,7 +218,7 @@ end
 
 do
   local buf, st = mount(fixture())
-  vim.api.nvim_buf_set_lines(buf, 2, 3, false, { "- [x] Buy milk @errand !p2 <tomorrow>" })
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, { "- [x] Buy milk @errand !p2 <2099-01-01>" })
   local ops = ops_for(buf, st)
   eq("a ticked box is a completion", #ops == 1 and { ops[1].kind, ops[1].id } or ops, { "close", "t1" })
 end
@@ -242,7 +242,7 @@ do
   local buf, st = mount(fixture())
   -- Retyping a whole line drops its extmark; content matching must rescue it
   -- rather than turning one task into a delete plus a create.
-  vim.api.nvim_buf_set_lines(buf, 2, 3, false, { "- [ ] Buy milk @errand @urgent !p2 <tomorrow>" })
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, { "- [ ] Buy milk @errand @urgent !p2 <2099-01-01>" })
   local ops = ops_for(buf, st)
   eq("a retyped line stays the same task", #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
     { "update", "t1", { labels = { "errand", "urgent" } } })
@@ -252,7 +252,7 @@ do
   local buf, st = mount(fixture())
   -- Move "Buy milk" from Inbox into House Chores.
   vim.api.nvim_buf_set_lines(buf, 2, 3, false, {})
-  vim.api.nvim_buf_set_lines(buf, 5, 5, false, { "- [ ] Buy milk @errand !p2 <tomorrow>" })
+  vim.api.nvim_buf_set_lines(buf, 5, 5, false, { "- [ ] Buy milk @errand !p2 <2099-01-01>" })
   local ops = ops_for(buf, st)
   eq("dragging a task to another project is a move",
     #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
@@ -413,10 +413,10 @@ do
     "",
     "# " .. render.day_heading(today, 0),
     "",
-    "- [ ] Parent due today <today>",
+    "- [ ] Parent due today <" .. today .. ">",
     "  - [ ] Undated child",
     "    - [ ] Grandchild",
-    "  - [ ] Child due later <later>",
+    "  - [ ] Child due later <" .. next_week .. ">",
   })
 
   local upcoming = render.build(family(), { view = "upcoming" })
@@ -424,7 +424,7 @@ do
   eq("upcoming has overdue and then every day of the week", #headings, 9)
   eq("upcoming headings are days", headings[3], "# " .. render.day_heading(tomorrow, 1))
   check("tomorrow's task sits under tomorrow",
-    upcoming[vim.fn.index(upcoming, headings[3]) + 3] == "- [ ] Tomorrow's task <tomorrow>", vim.inspect(upcoming))
+    upcoming[vim.fn.index(upcoming, headings[3]) + 3] == "- [ ] Tomorrow's task <" .. tomorrow .. ">", vim.inspect(upcoming))
 
   local buf, st = mount(family(), { view = "upcoming" })
   local ops, errors = ops_for(buf, st)
@@ -433,9 +433,9 @@ do
   -- Drag "Tomorrow's task" up under today.
   buf, st = mount(family(), { view = "upcoming" })
   local cur = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local from = vim.fn.index(cur, "- [ ] Tomorrow's task <tomorrow>")
+  local from = vim.fn.index(cur, "- [ ] Tomorrow's task <" .. tomorrow .. ">")
   vim.api.nvim_buf_set_lines(buf, from, from + 1, false, {})
-  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <tomorrow>" })
+  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <" .. tomorrow .. ">" })
   ops = ops_for(buf, st)
   eq("moving a line to another day reschedules it",
     #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
@@ -445,9 +445,9 @@ do
   timed.tasks[5].due = { string = "tomorrow 3pm", date = tomorrow .. "T15:00:00" }
   buf, st = mount(timed, { view = "upcoming" })
   cur = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  from = vim.fn.index(cur, "- [ ] Tomorrow's task <tomorrow 3pm>")
+  from = vim.fn.index(cur, "- [ ] Tomorrow's task <" .. tomorrow .. " 15:00>")
   vim.api.nvim_buf_set_lines(buf, from, from + 1, false, {})
-  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <tomorrow 3pm>" })
+  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <" .. tomorrow .. " 15:00>" })
   ops = ops_for(buf, st)
   eq("rescheduling a timed task keeps its time",
     #ops == 1 and ops[1].fields or ops, { due_datetime = today .. "T15:00:00" })
@@ -543,6 +543,28 @@ do
   eq("api 4 is p1 (urgent)", model.api_to_ui_priority(4), 1)
   eq("api 1 is p4 (none)", model.api_to_ui_priority(1), 4)
   eq("p1 round trips", model.ui_to_api_priority(model.api_to_ui_priority(4)), 4)
+end
+
+----------------------------------------------------------------- due display
+print("\ndue display")
+do
+  local function shown(due)
+    return model.due_string({ due = due })
+  end
+  eq("a one-off date shows as the date", shown({ string = "tomorrow", date = "2026-09-24" }), "2026-09-24")
+  eq("a timed one adds the time", shown({ string = "26 Sep 3:00 PM", date = "2026-09-26T15:00:00" }),
+    "2026-09-26 15:00")
+  local utc = os.time({ year = 2026, month = 9, day = 26, hour = 15 }) + (os.time() - os.time(os.date("!*t")))
+  eq("a fixed-timezone time is shown in local time", shown({ string = "3pm", date = "2026-09-26T15:00:00Z" }),
+    os.date("%Y-%m-%d %H:%M", utc))
+  eq("a recurring date keeps its words",
+    shown({ string = "every saturday", date = "2026-09-26", is_recurring = true }), "every saturday")
+
+  local buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, { "- [ ] Buy milk @errand !p2 <friday>" })
+  local ops = ops_for(buf, st)
+  eq("typing words in the <...> still sends them to Todoist's parser",
+    #ops == 1 and ops[1].fields or ops, { due_string = "friday" })
 end
 
 ------------------------------------------------------------------ curl config

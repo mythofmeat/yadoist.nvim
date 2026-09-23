@@ -24,18 +24,43 @@ function M.order(task)
   return tonumber(task.child_order) or tonumber(task.order) or 0
 end
 
---- The human string Todoist parsed the due date from ("every saturday"), which
---- is what we want to show so it round-trips instead of collapsing to a date.
+--- A resolved due date as `YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` when it has a
+--- time. Todoist sends a floating time as-is and a fixed-timezone one in UTC
+--- with a trailing Z, which is shown in local time.
+local function format_date(date)
+  local day, h, min, utc = date:match("^(%d+%-%d+%-%d+)T(%d+):(%d+):[%d.]+(Z?)")
+  if not day then
+    return date:sub(1, 10)
+  end
+  if utc == "Z" then
+    local y, m, d = day:match("(%d+)-(%d+)-(%d+)")
+    local stamp = os.time({ year = y, month = m, day = d, hour = h, min = min })
+    -- os.time read that as local time; shift by the local offset from UTC.
+    local offset = os.time() - os.time(os.date("!*t"))
+    return os.date("%Y-%m-%d %H:%M", stamp + offset)
+  end
+  return ("%s %s:%s"):format(day, h, min)
+end
+
+--- What goes between the `<...>`. One-off dates are shown as the date they
+--- resolved to, so every one reads the same whether it was typed as `tomorrow`
+--- or `26 Sep 3pm`. Recurring ones keep the string Todoist parsed them from
+--- ("every saturday"), because saving a plain date back would turn them into
+--- one-offs.
 function M.due_string(task)
   local due = task.due
   if type(due) ~= "table" then
     return nil
   end
+  local has_date = type(due.date) == "string" and due.date ~= ""
+  if has_date and due.is_recurring ~= true then
+    return format_date(due.date)
+  end
   if type(due.string) == "string" and due.string ~= "" then
     return due.string
   end
-  if type(due.date) == "string" and due.date ~= "" then
-    return due.date
+  if has_date then
+    return format_date(due.date)
   end
   return nil
 end
