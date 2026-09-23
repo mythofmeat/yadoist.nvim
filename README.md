@@ -105,6 +105,10 @@ Editing follows from the headings being days rather than projects:
 - **Tasks never change project here.** Use `all` for that; `##` sections are not
   understood in date views.
 
+A date view left open past midnight redraws its days as soon as you come back
+to it, provided nothing is unsaved. If something is, `:w` refuses rather than
+file your edits under yesterday's days.
+
 ## The syntax
 
 | you write | it means |
@@ -149,7 +153,10 @@ Todoist stops returning it.
 | `R` | re-fetch from Todoist |
 | `q` | close the buffer |
 
-Nothing is sent until you `:w`.
+Nothing is sent until you `:w`, and then everything goes in one request
+through Todoist's Sync API. Each change carries its own id that Todoist applies
+at most once, so if the connection drops before the reply arrives, yadoist
+resends the request without anything happening twice.
 
 ## Configuration
 
@@ -163,6 +170,10 @@ require("yadoist").setup({
   -- Deleting a line deletes the task for everyone the project is shared with,
   -- so :w asks first and lists exactly what is about to go.
   confirm_delete = true,
+
+  -- Todoist creates any label it has not seen, so :w refuses a label that does
+  -- not exist yet rather than turning a typo like @erand into a new one.
+  create_labels = false,
 
   -- Show only these projects, by name. nil shows all of them.
   projects = nil,
@@ -203,7 +214,8 @@ confirmation prompt is for.
 
 - **Create projects or sections.** A `#` heading that does not match a project
   in Todoist is an error on the line rather than a new project, so a typo can
-  never quietly scatter your tasks into somewhere new.
+  never quietly scatter your tasks into somewhere new. Labels get the same
+  treatment unless you set `create_labels = true`.
 - **Work offline.** There is no local copy by design.
 - **Show completed tasks.** Todoist only returns active ones. A task you tick
   stays visible until the next refresh, then disappears.

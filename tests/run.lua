@@ -6,6 +6,7 @@ local render = require("yadoist.render")
 local diff = require("yadoist.diff")
 local model = require("yadoist.model")
 local dapi = require("yadoist.api")
+local sync = require("yadoist.sync")
 
 local passed, failed = 0, 0
 
@@ -287,6 +288,13 @@ do
 
   local _, e3 = parse.buffer({ "# Inbox", "    - [ ] too deep" })
   check("rejects an over-indented task", #e3 == 1, vim.inspect(e3))
+
+  local entries, e4 = parse.buffer({ "# Inbox", "- [ ] Above", "", "# Work", "", "  - [ ] Indented first" })
+  check("indentation never nests under a task from another heading",
+    #e4 == 1 and e4[1].lnum == 6 and entries[2].parent_lnum == nil, vim.inspect(e4))
+
+  local _, e5 = parse.buffer({ "# Work", "- [ ] Above", "## Kitchen", "  - [ ] Indented first" })
+  check("nor from above a section heading", #e5 == 1 and e5[1].lnum == 4, vim.inspect(e5))
 end
 
 do
@@ -490,6 +498,10 @@ do
   }
   eq("an orphaned subtask is drawn at the top level", render.build(orphaned),
     { "# Inbox", "", "- [ ] Child of a finished task" })
+
+  local buf, st = mount(orphaned)
+  local ops, errors = ops_for(buf, st)
+  check("and is not promoted just by saving", ops and #ops == 0, vim.inspect(errors or ops))
 end
 
 do
@@ -543,6 +555,107 @@ do
   eq("api 4 is p1 (urgent)", model.api_to_ui_priority(4), 1)
   eq("api 1 is p4 (none)", model.api_to_ui_priority(1), 4)
   eq("p1 round trips", model.ui_to_api_priority(model.api_to_ui_priority(4)), 4)
+end
+
+----------------------------------------------------------------------- labels
+print("\nlabels")
+do
+  local function labelled(line)
+    local buf, st = mount(fixture())
+    st.label_names = { errand = true, house = true, shared = true }
+    vim.api.nvim_buf_set_lines(buf, 2, 3, false, { line })
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local entries = parse.buffer(lines)
+    local resolve, resolve_stale = resolvers(buf, st)
+    return diff.compute({
+      entries = entries, resolve = resolve, resolve_stale = resolve_stale, known = st.known,
+      project_ids = st.project_ids, section_ids = st.section_ids, label_names = st.label_names,
+    })
+  end
+
+  local ops, errors = labelled("- [ ] Buy milk @erand !p2 <2099-01-01>")
+  check("a label that does not exist is refused", #ops == 0 and #errors == 1
+    and errors[1].msg:find('"erand"', 1, true) ~= nil, vim.inspect(errors))
+
+  ops, errors = labelled("- [ ] Buy milk @errand @shared !p2 <2099-01-01>")
+  check("an existing label is fine", #errors == 0 and #ops == 1, vim.inspect(errors))
+
+  local buf, st = mount(fixture())
+  st.label_names = {}
+  -- t1 already carries @errand even though it is not in the list: a shared
+  -- project's label, say. Leaving it alone must not be an error.
+  vim.api.nvim_buf_set_text(buf, 2, 6, 2, 14, { "Buy oat milk" })
+  local entries = parse.buffer(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+  local resolve, resolve_stale = resolvers(buf, st)
+  ops, errors = diff.compute({
+    entries = entries, resolve = resolve, resolve_stale = resolve_stale, known = st.known,
+    project_ids = st.project_ids, section_ids = st.section_ids, label_names = st.label_names,
+  })
+  check("a label the task already had is kept", #errors == 0 and #ops == 1, vim.inspect(errors))
+end
+
+------------------------------------------------------------------------- sync
+print("\nsync")
+do
+  local cmds = sync._commands_for({
+    { kind = "create", lnum = 3, content = "Parent", project_id = "p1", priority = 1, labels = {},
+      due_date = "2026-09-24", done = true },
+    { kind = "create", lnum = 4, content = "Child", parent_lnum = 3, priority = 1, labels = {} },
+    { kind = "update", id = "t1", fields = { due_string = "no date" } },
+    { kind = "update", id = "t2", fields = { due_datetime = "2026-09-24T15:00:00", content = "x" } },
+    { kind = "move", id = "t3", fields = {}, parent_lnum = 3 },
+    { kind = "reopen", id = "t4" },
+  })
+  local shape = vim.tbl_map(function(c)
+    return { c.command.type, c.command.temp_id, c.command.args.id, c.command.args.parent_id, c.command.args.due }
+  end, cmds)
+  eq("ops become sync commands linked by temp_id", shape, {
+    { "item_add", "yadoist-line-3", nil, nil, { date = "2026-09-24" } },
+    { "item_close", nil, "yadoist-line-3" },
+    { "item_add", "yadoist-line-4", nil, "yadoist-line-3" },
+    { "item_update", nil, "t1", nil, vim.NIL },
+    { "item_update", nil, "t2", nil, { date = "2026-09-24T15:00:00" } },
+    { "item_move", nil, "t3", "yadoist-line-3" },
+    { "item_uncomplete", nil, "t4" },
+  })
+
+  -- A fake Sync endpoint: records requests, maps temp ids, fails on demand.
+  local real, requests = dapi.sync, {}
+  local flaky = true
+  dapi.sync = function(commands, cb)
+    table.insert(requests, vim.deepcopy(commands))
+    if flaky then
+      flaky = false
+      return cb(nil, "curl failed (exit 28)")
+    end
+    local status, mapping = {}, {}
+    for _, c in ipairs(commands) do
+      status[c.uuid] = c.args.content == "bad" and { error = "Invalid argument value" } or "ok"
+      if c.temp_id then
+        mapping[c.temp_id] = "real-" .. c.temp_id
+      end
+    end
+    cb({ sync_status = status, temp_id_mapping = mapping })
+  end
+
+  local ops = {}
+  for i = 1, 120 do
+    table.insert(ops, { kind = "create", lnum = i, content = "task " .. i, priority = 1, labels = {} })
+  end
+  ops[120].parent_lnum = 1
+  ops[50].content = "bad"
+  local result
+  sync.apply(ops, function(r) result = r end)
+  dapi.sync = real
+
+  eq("120 commands go in two requests, the first one retried",
+    vim.tbl_map(function(r) return #r end, requests), { 100, 100, 20 })
+  eq("the retry resends the same uuids", requests[1][1].uuid, requests[2][1].uuid)
+  eq("a later batch names an earlier batch's task by its real id",
+    requests[3][20].args.parent_id, "real-yadoist-line-1")
+  check("a failed command is reported and the rest counted",
+    result and result.applied == 119 and #result.errors == 1
+      and result.errors[1]:find("Invalid argument value", 1, true) ~= nil, vim.inspect(result))
 end
 
 ----------------------------------------------------------------- due display

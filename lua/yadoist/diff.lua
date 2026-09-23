@@ -100,6 +100,8 @@ end
 ---   known        { [task_id] = task } -- everything we rendered
 ---   project_ids  { [name] = id }
 ---   section_ids  { [project_id] = { [name] = id } }
+---   label_names  { [name] = true } labels that already exist, or nil to let
+---                any label through
 ---   by_date      date views only: { headings, placed, overdue, inbox_id },
 ---                the first three from render (see resolve_by_date)
 --- @return table[] ops, table[] errors
@@ -200,6 +202,22 @@ function M.compute(ctx)
       table.insert(errors, { lnum = e.lnum, msg = msg })
     end
 
+    if ctx.label_names then
+      local had = {}
+      for _, l in ipairs(e.task and model.labels(e.task) or {}) do
+        had[l] = true
+      end
+      for _, l in ipairs(e.labels) do
+        if not ctx.label_names[l] and not had[l] then
+          table.insert(errors, {
+            lnum = e.lnum,
+            msg = ("no label named %q — yadoist does not create labels (add it in Todoist, or set create_labels = true)")
+              :format(l),
+          })
+        end
+      end
+    end
+
     if e.parent_lnum then
       local parent = by_lnum[e.parent_lnum]
       if parent and parent.task then
@@ -251,8 +269,7 @@ function M.compute(ctx)
 
       local due = model.due_string(task)
       if e.due_string ~= due then
-        -- Todoist clears a due date when its natural-language parser is handed
-        -- "no date", which is what its own UI sends.
+        -- "no date" is what Todoist's own UI sends to clear one.
         fields.due_string = e.due_string or "no date"
       elseif e.reschedule then
         for k, v in pairs(e.reschedule) do
@@ -280,7 +297,11 @@ function M.compute(ctx)
         if e.parent_id ~= task.parent_id or pending_parent then
           moved = { parent_id = e.parent_id }
         end
-      elseif task.parent_id then
+      elseif task.parent_id and known[task.parent_id] then
+        -- Un-indented from under a parent that is on screen: a promotion. A
+        -- subtask whose parent was never drawn is shown at the top level
+        -- without that meaning anything, so it only moves if its project or
+        -- section line changed, below.
         moved = e.section_id and { section_id = e.section_id } or { project_id = e.project_id }
       elseif e.section_id ~= task.section_id then
         moved = e.section_id and { section_id = e.section_id } or { project_id = e.project_id }

@@ -12,6 +12,11 @@ local defaults = {
   -- so ask first.
   confirm_delete = true,
 
+  -- Todoist creates any label it has not seen, so a typo like @erand would
+  -- quietly become a new label. By default :w refuses instead, the same way it
+  -- refuses to invent projects. Set true to let new labels through.
+  create_labels = false,
+
   -- Only show these projects, by name. nil shows every project.
   projects = nil,
 

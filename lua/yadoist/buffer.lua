@@ -127,10 +127,26 @@ function M.render(bufnr)
     })
   end
 
+  -- Labels on any task count as existing, not just personal ones: a shared
+  -- project's tasks can carry labels that are not in your own list.
+  st.label_names = nil
+  if not config.options.create_labels then
+    st.label_names = {}
+    for _, label in ipairs(st.data.labels or {}) do
+      st.label_names[label.name] = true
+    end
+    for _, task in ipairs(st.data.tasks or {}) do
+      for _, l in ipairs(model.labels(task)) do
+        st.label_names[l] = true
+      end
+    end
+  end
+
   st.project_ids, st.section_ids, st.by_date = {}, {}, nil
   for _, project in ipairs(st.data.projects or {}) do
     st.project_ids[project.name] = project.id
   end
+  st.drawn_on = model.today()
   if meta.headings then
     st.by_date = { headings = meta.headings, placed = meta.placed, overdue = render.OVERDUE }
     for _, project in ipairs(st.data.projects or {}) do
@@ -193,6 +209,13 @@ local function write(bufnr)
     return notify("tasks have not loaded yet — press R (or :YadoistRefresh) first", vim.log.levels.WARN)
   end
 
+  if st.by_date and st.drawn_on ~= model.today() then
+    -- The headings still say which day was "Today" when they were drawn, so a
+    -- task moved under one would land on yesterday's date.
+    return notify(("this view's days were drawn on %s — press R to redraw them before saving (it drops unsaved edits, so yank them first)")
+      :format(st.drawn_on), vim.log.levels.WARN)
+  end
+
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local entries, errors = parse.buffer(lines)
   if #errors > 0 then
@@ -208,6 +231,7 @@ local function write(bufnr)
     project_ids = st.project_ids or {},
     section_ids = st.section_ids or {},
     by_date = st.by_date,
+    label_names = st.label_names,
   })
   if #resolve_errors > 0 then
     return report(bufnr, resolve_errors)
@@ -282,6 +306,21 @@ local function attach(bufnr)
       end,
     })
   end
+
+  -- A date view left open past midnight would keep showing yesterday as
+  -- "Today". Nothing needs fetching to fix that, only redrawing, so do it as
+  -- soon as the buffer is looked at again, as long as it has no unsaved edits.
+  vim.api.nvim_create_autocmd({ "BufEnter", "FocusGained", "CursorHold" }, {
+    group = group,
+    buffer = bufnr,
+    desc = "Redraw a date view whose days have gone stale",
+    callback = function()
+      local st = state[bufnr]
+      if st and st.by_date and st.drawn_on ~= model.today() and not vim.bo[bufnr].modified then
+        M.render(bufnr)
+      end
+    end,
+  })
 
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = group,

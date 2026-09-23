@@ -1,8 +1,10 @@
--- Apply a set of diff operations to Todoist, one at a time.
+-- Apply a set of diff operations to Todoist through its Sync API.
 --
--- Serial rather than concurrent, because creates have to land before the
--- subtasks that point at them, and because a shared list is not the place to
--- race a rate limiter.
+-- Every change goes in one request (Todoist takes up to 100 commands at a
+-- time), so a big edit is one round trip rather than dozens. A new task gets a
+-- temp_id that its subtasks can name as their parent inside the same request.
+-- Each command carries a uuid, and Todoist applies a uuid at most once, which
+-- is what makes it safe to resend a request whose reply never arrived.
 local api = require("yadoist.api")
 local config = require("yadoist.config")
 
@@ -44,6 +46,93 @@ local function confirm_deletes(ops)
   return nil
 end
 
+local BATCH = 100
+
+local function uuid()
+  return vim.fn.sha256(tostring(math.random()) .. tostring(vim.uv.hrtime())):sub(1, 32)
+end
+
+local function temp_id(lnum)
+  return "yadoist-line-" .. lnum
+end
+
+--- The diff speaks in REST-style field names; the Sync API wants a `due`
+--- object instead, and null to clear it.
+local function due_of(fields)
+  if fields.due_string == "no date" then
+    return vim.NIL
+  elseif fields.due_string then
+    return { string = fields.due_string }
+  elseif fields.due_datetime or fields.due_date then
+    return { date = fields.due_datetime or fields.due_date }
+  end
+  return nil
+end
+
+--- Turn each op into its Sync commands, remembering which op each came from.
+local function commands_for(ops)
+  local out = {}
+  local function add(op, type, args, tmp)
+    table.insert(out, { op = op, command = { type = type, uuid = uuid(), temp_id = tmp, args = args } })
+  end
+
+  for _, op in ipairs(ops) do
+    if op.kind == "create" then
+      local tmp = temp_id(op.lnum)
+      add(op, "item_add", {
+        content = op.content,
+        project_id = op.project_id,
+        section_id = op.section_id,
+        parent_id = op.parent_id or (op.parent_lnum and temp_id(op.parent_lnum)) or nil,
+        priority = op.priority,
+        labels = op.labels,
+        due = due_of(op),
+      }, tmp)
+      if op.done then
+        add(op, "item_close", { id = tmp })
+      end
+    elseif op.kind == "update" then
+      local args = { id = op.id }
+      for _, key in ipairs({ "content", "priority", "labels" }) do
+        args[key] = op.fields[key]
+      end
+      args.due = due_of(op.fields)
+      add(op, "item_update", args)
+    elseif op.kind == "move" then
+      local args = vim.tbl_extend("force", { id = op.id }, op.fields)
+      if op.parent_lnum then
+        args.parent_id = temp_id(op.parent_lnum)
+      end
+      add(op, "item_move", args)
+    elseif op.kind == "close" then
+      add(op, "item_close", { id = op.id })
+    elseif op.kind == "reopen" then
+      add(op, "item_uncomplete", { id = op.id })
+    elseif op.kind == "delete" then
+      add(op, "item_delete", { id = op.id })
+    end
+  end
+  return out
+end
+
+--- Send one batch, resending it once if the request itself failed. The uuids
+--- make the resend harmless if the first attempt did in fact land.
+local function send(commands, cb)
+  api.sync(commands, function(res, err)
+    if not err then
+      return cb(res)
+    end
+    api.sync(commands, cb)
+  end)
+end
+
+local function describe_error(status)
+  if type(status) == "table" then
+    return tostring(status.error or status.error_tag or vim.inspect(status))
+  end
+  return tostring(status)
+end
+
 ---@param ops table[]
 ---@param done fun(result: table|nil, err: string|nil)
 function M.apply(ops, done)
@@ -55,91 +144,73 @@ function M.apply(ops, done)
     return done({ applied = 0, errors = {} })
   end
 
-  local new_ids, errors, applied = {}, {}, 0
-  local index = 0
+  local pending = commands_for(ops)
+  local ids, failed, errors = {}, {}, {}
 
-  local function step()
-    index = index + 1
-    local op = ops[index]
-    if not op then
-      return done({ applied = applied, errors = errors })
-    end
-
-    local function fail(err)
-      table.insert(errors, ("%s %q: %s"):format(op.kind, tostring(op.content), err))
-      step()
-    end
-
-    local function finish(_, err)
-      if err then
-        return fail(err)
-      end
-      applied = applied + 1
-      step()
-    end
-
-    if op.kind == "create" then
-      local parent_id = op.parent_id
-      if not parent_id and op.parent_lnum then
-        parent_id = new_ids[op.parent_lnum]
-        if not parent_id then
-          return fail("its parent task was not created, so it has nothing to nest under")
-        end
-      end
-
-      api.create({
-        content = op.content,
-        project_id = op.project_id,
-        section_id = op.section_id,
-        parent_id = parent_id,
-        priority = op.priority,
-        labels = op.labels,
-        due_string = op.due_string,
-        due_date = op.due_date,
-      }, function(res, err)
-        if err then
-          return fail(err)
-        end
-        applied = applied + 1
-        local id = type(res) == "table" and res.id or nil
-        if id then
-          new_ids[op.lnum] = id
-        end
-        if op.done and id then
-          api.close(id, function(_, close_err)
-            if close_err then
-              table.insert(errors, ("complete %q: %s"):format(op.content, close_err))
-            end
-            step()
-          end)
-        else
-          step()
-        end
-      end)
-    elseif op.kind == "move" then
-      local fields = vim.deepcopy(op.fields)
-      if op.parent_lnum then
-        fields.parent_id = new_ids[op.parent_lnum]
-        if not fields.parent_id then
-          return fail("its new parent task was not created")
-        end
-      end
-      api.move(op.id, fields, finish)
-    elseif op.kind == "update" then
-      api.update(op.id, op.fields, finish)
-    elseif op.kind == "close" then
-      api.close(op.id, finish)
-    elseif op.kind == "reopen" then
-      api.reopen(op.id, finish)
-    elseif op.kind == "delete" then
-      api.delete(op.id, finish)
-    else
-      step()
+  local function fail(op, msg)
+    if not failed[op] then
+      failed[op] = true
+      table.insert(errors, ("%s %q: %s"):format(op.kind, tostring(op.content), msg))
     end
   end
 
-  step()
+  local function finish()
+    local applied = 0
+    for _, op in ipairs(ops) do
+      if not failed[op] then
+        applied = applied + 1
+      end
+    end
+    done({ applied = applied, errors = errors })
+  end
+
+  local index = 1
+  local function next_batch()
+    if index > #pending then
+      return finish()
+    end
+    local batch, commands = {}, {}
+    for i = index, math.min(index + BATCH - 1, #pending) do
+      local item = pending[i]
+      -- A temp_id only means something inside the request that created it, so
+      -- anything a previous batch created is named by its real id.
+      for _, key in ipairs({ "id", "parent_id" }) do
+        local v = item.command.args[key]
+        if v and ids[v] then
+          item.command.args[key] = ids[v]
+        end
+      end
+      table.insert(batch, item)
+      table.insert(commands, item.command)
+    end
+    index = index + #batch
+
+    send(commands, function(res, err)
+      if err then
+        for _, item in ipairs(batch) do
+          fail(item.op, err)
+        end
+        return next_batch()
+      end
+      for tmp, id in pairs(type(res.temp_id_mapping) == "table" and res.temp_id_mapping or {}) do
+        ids[tmp] = id
+      end
+      local status = type(res.sync_status) == "table" and res.sync_status or {}
+      for _, item in ipairs(batch) do
+        local s = status[item.command.uuid]
+        if s ~= "ok" then
+          fail(item.op, s == nil and "Todoist did not report on it" or describe_error(s))
+        end
+      end
+      next_batch()
+    end)
+  end
+
+  next_batch()
 end
+
+-- Exposed for the tests.
+M._commands_for = commands_for
 
 --- One-line summary of what a write is about to do, for the message area.
 function M.describe(ops)

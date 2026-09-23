@@ -96,9 +96,14 @@ function M.buffer(lines)
     end
   end
 
-  -- Resolve subtask parents from indentation.
-  local stack = {}
+  -- Resolve subtask parents from indentation. A heading starts afresh, so an
+  -- indented first line can never reach back to a task under the heading above.
+  local stack, under = {}, nil
   for _, e in ipairs(entries) do
+    local here = tostring(e.project) .. "\0" .. tostring(e.section)
+    if here ~= under then
+      stack, under = {}, here
+    end
     for d = #stack, e.depth + 1, -1 do
       stack[d] = nil
     end

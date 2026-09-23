@@ -115,10 +115,10 @@ local function get_all(path, cb)
   page(nil)
 end
 
---- Fetch projects, sections and active tasks together.
+--- Fetch projects, sections, labels and active tasks together.
 ---@param cb fun(data: table|nil, err: string|nil)
 function M.fetch(cb)
-  local out, pending, failed = {}, 3, false
+  local out, pending, failed = {}, 4, false
   local function collect(key)
     return function(items, err)
       if failed then
@@ -138,30 +138,13 @@ function M.fetch(cb)
   get_all("/projects", collect("projects"))
   get_all("/sections", collect("sections"))
   get_all("/tasks", collect("tasks"))
+  get_all("/labels", collect("labels"))
 end
 
-function M.create(fields, cb)
-  request("POST", "/tasks", fields, cb)
-end
-
-function M.update(id, fields, cb)
-  request("POST", "/tasks/" .. id, fields, cb)
-end
-
-function M.close(id, cb)
-  request("POST", "/tasks/" .. id .. "/close", nil, cb)
-end
-
-function M.reopen(id, cb)
-  request("POST", "/tasks/" .. id .. "/reopen", nil, cb)
-end
-
-function M.delete(id, cb)
-  request("DELETE", "/tasks/" .. id, nil, cb)
-end
-
-function M.move(id, fields, cb)
-  request("POST", "/tasks/" .. id .. "/move", fields, cb)
+--- Send a list of Sync API commands in one request.
+---@param cb fun(result: table|nil, err: string|nil)
+function M.sync(commands, cb)
+  request("POST", "/sync", { commands = commands }, cb)
 end
 
 -- Exposed for the tests.
