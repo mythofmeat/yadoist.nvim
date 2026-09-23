@@ -48,31 +48,68 @@ Run `:Yadoist`.
 | view | shows |
 |---|---|
 | `all` (the default) | every task, grouped by project |
-| `today` | due today, plus anything overdue |
-| `upcoming` | due within the next seven days, plus anything overdue |
+| `today` | overdue, then due today, grouped by day |
+| `upcoming` | overdue, then each of the next seven days |
 | `overdue` | past its due date and still open |
 | `inbox` | the Inbox project on its own |
 
-A view is only a filter. The buffer grammar never changes, `# Project` always
-means a project, and every edit works the same way whichever view you are
-looking at, so you can complete and retitle things straight from `today`. A
+A view is only a filter. The buffer grammar never changes, and every edit works
+the same way whichever view you are looking at, so you can complete and retitle
+things straight from `today`. Each view gets its own buffer (`yadoist://today`
+and so on), so switching between them keeps whatever you had unsaved in the
+other. Tasks a view hides are never mistaken for deleted ones.
+
+### Project views
+
+`all`, `overdue` and `inbox` are grouped by project, with `# Project` headings. A
 matching task always brings its parent along, so a subtask is never shown
-without the task it belongs to.
+without the task it belongs to. Filtered views leave out projects with nothing
+in them, so `all` is where you go to add a task to an empty project.
 
-Each view gets its own buffer (`yadoist://today` and so on), so switching
-between them keeps whatever you had unsaved in the other. Tasks a view hides are
-never mistaken for deleted ones.
+### Date views
 
-Two things follow from views being filters. Filtered views leave out projects
-with nothing in them, so `all` is where you go to add a task to an empty
-project. And a task you add in `today` without a due date is created correctly
-but disappears at the next refresh, because it no longer matches the filter.
+`today` and `upcoming` work the way Todoist's own Today and Upcoming do:
+
+```markdown
+# Overdue
+
+- [ ] Call the plumber <yesterday>                  Inbox
+
+# Sep 23 · Today · Wednesday
+
+- [ ] Ship the report !p1 <today>                   Work
+  - [ ] Proofread it
+- [ ] Get the wrench back from Dave <today>         House Chores › Fix the leaky sink
+
+# Sep 24 · Tomorrow · Thursday
+```
+
+- **Headings are days.** `# Overdue` is always first when anything is overdue,
+  then one heading per day. Every day is drawn even when it is empty, so there
+  is always somewhere to add a task for it.
+- **A task brings its subtasks.** Everything under a task due today shows up in
+  `today`, whatever its own date. A subtask that is due in its own right sits
+  under its own day instead, at the top level.
+- **The project is shown beside each line** in dim virtual text, with the
+  parent's name when a subtask is drawn apart from it. It is not part of the
+  text, so it is never read back.
+
+Editing follows from the headings being days rather than projects:
+
+- **Moving a line under another day reschedules it**, as dragging it does in
+  Todoist. A timed task keeps its time. Recurring tasks refuse, since a fixed
+  date would turn them into one-offs — edit their `<...>` instead.
+- **A new line under a day** goes to the Inbox, due that day unless you give it
+  a `<date>` of its own. Under `# Overdue` it needs one.
+- **A new subtask** goes wherever its parent is.
+- **Tasks never change project here.** Use `all` for that; `##` sections are not
+  understood in date views.
 
 ## The syntax
 
 | you write | it means |
 |---|---|
-| `# Name` | a project |
+| `# Name` | a project (a day, in the date views) |
 | `## Name` | a section within the project above it |
 | `- [ ]` / `- [x]` | an open / completed task |
 | two spaces of indent | a subtask of the line above |
@@ -139,10 +176,11 @@ require("yadoist").setup({
 Every highlight group links to a standard one, so the buffer follows your
 colourscheme without configuration. Override any of `YadoistProject`,
 `YadoistSection`, `YadoistCheckboxOpen`, `YadoistCheckboxDone`, `YadoistContent`,
-`YadoistContentDone`, `YadoistLabel`, `YadoistPriority1`–`3`, `YadoistDue`, `YadoistDueToday`
-or `YadoistDueOverdue` to taste. Highlighting is applied from the task data rather
-than by matching text, which is why an overdue date is coloured differently from
-one that is merely set.
+`YadoistContentDone`, `YadoistLabel`, `YadoistPriority1`–`3`, `YadoistDue`,
+`YadoistDueToday`, `YadoistDueOverdue` or `YadoistAnnotation` (the project names
+in date views) to taste. Highlighting is applied from the task data rather than
+by matching text, which is why an overdue date is coloured differently from one
+that is merely set.
 
 ## How identity survives editing
 

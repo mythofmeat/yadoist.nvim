@@ -15,6 +15,7 @@ local links = {
   YadoistDue = "Constant",
   YadoistDueToday = "DiagnosticWarn",
   YadoistDueOverdue = "DiagnosticError",
+  YadoistAnnotation = "Comment",
 }
 
 function M.apply()

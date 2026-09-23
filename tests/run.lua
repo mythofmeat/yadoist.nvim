@@ -60,7 +60,7 @@ end
 local ns = vim.api.nvim_create_namespace("yadoist_test_ids")
 
 local function mount(data, opts)
-  local lines, tasks = render.build(data, opts)
+  local lines, tasks, _, meta = render.build(data, opts)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 
@@ -81,6 +81,14 @@ local function mount(data, opts)
   for _, s in ipairs(data.sections) do
     st.section_ids[s.project_id] = st.section_ids[s.project_id] or {}
     st.section_ids[s.project_id][s.name] = s.id
+  end
+  if meta.headings then
+    st.by_date = { headings = meta.headings, placed = meta.placed, overdue = render.OVERDUE }
+    for _, p in ipairs(data.projects) do
+      if model.is_inbox(p) then
+        st.by_date.inbox_id = p.id
+      end
+    end
   end
   return buf, st, lines
 end
@@ -121,6 +129,7 @@ local function ops_for(buf, st)
     known = st.known,
     project_ids = st.project_ids,
     section_ids = st.section_ids,
+    by_date = st.by_date,
   })
 end
 
@@ -316,18 +325,26 @@ do
     }
   end
 
-  eq("today shows only what is due, and pulls in an ancestor",
+  local today_heading = "# " .. render.day_heading(today, 0)
+  eq("today is grouped by day, overdue first",
     render.build(dated(), { view = "today" }), {
-      "# Inbox",
+      "# Overdue",
       "",
-      "- [ ] Due today <" .. today .. ">",
       "- [ ] Overdue <" .. yesterday .. ">",
       "",
-      "# House Chores",
+      today_heading,
       "",
-      "- [ ] Chore parent",
-      "  - [ ] Chore child <" .. today .. ">",
+      "- [ ] Due today <" .. today .. ">",
+      "- [ ] Chore child <" .. today .. ">",
     })
+
+  local _, _, _, meta = render.build(dated(), { view = "today" })
+  local notes = {}
+  for _, a in ipairs(meta.annotations) do
+    notes[a.lnum] = a.text
+  end
+  eq("a subtask drawn without its parent says where it lives", notes[8], "House Chores › Chore parent")
+  eq("a top-level task says which project it is in", notes[7], "Inbox")
 
   local overdue = render.build(dated(), { view = "overdue" })
   eq("overdue is today's list minus today", overdue, {
@@ -347,7 +364,7 @@ do
   check("all keeps empty projects as somewhere to add tasks",
     vim.tbl_contains(all, "# Someday"), vim.inspect(all))
   check("a filtered view drops empty projects",
-    not vim.tbl_contains(render.build(dated(), { view = "today" }), "# Someday"))
+    not vim.tbl_contains(render.build(dated(), { view = "overdue" }), "# Someday"))
 
   -- The important safety property: tasks a view hides must not read as deleted.
   local buf, st = mount(dated(), { view = "today" })
@@ -356,10 +373,111 @@ do
     vim.inspect(errors or ops))
 
   buf, st = mount(dated(), { view = "today" })
-  vim.api.nvim_buf_set_text(buf, 2, 6, 2, 15, { "Due today!" })
+  vim.api.nvim_buf_set_text(buf, 6, 6, 6, 15, { "Due today!" })
   ops = ops_for(buf, st)
   eq("editing inside a filtered view still updates the right task",
     #ops == 1 and { ops[1].kind, ops[1].id } or ops, { "update", "d1" })
+end
+
+print("\ndate views")
+do
+  local today = model.today()
+  local tomorrow = model.date_after(1)
+  local yesterday = model.date_after(-1)
+  local next_week = model.date_after(20)
+
+  local function family()
+    return {
+      projects = {
+        { id = "p1", name = "Inbox", is_inbox_project = true, child_order = 1 },
+        { id = "p2", name = "Work", child_order = 2 },
+      },
+      sections = {},
+      tasks = {
+        task("f1", "Parent due today", { project_id = "p2", due = { string = "today", date = today } }),
+        task("f2", "Undated child", { project_id = "p2", parent_id = "f1", child_order = 1 }),
+        task("f3", "Child due later", { project_id = "p2", parent_id = "f1", child_order = 2,
+          due = { string = "later", date = next_week } }),
+        task("f4", "Grandchild", { project_id = "p2", parent_id = "f2" }),
+        task("f5", "Tomorrow's task", { due = { string = "tomorrow", date = tomorrow } }),
+        task("f6", "Weekly", { due = { string = "every day", date = yesterday, is_recurring = true } }),
+      },
+    }
+  end
+
+  local lines = render.build(family(), { view = "today" })
+  eq("a task due today brings every subtask with it", lines, {
+    "# Overdue",
+    "",
+    "- [ ] Weekly <every day>",
+    "",
+    "# " .. render.day_heading(today, 0),
+    "",
+    "- [ ] Parent due today <today>",
+    "  - [ ] Undated child",
+    "    - [ ] Grandchild",
+    "  - [ ] Child due later <later>",
+  })
+
+  local upcoming = render.build(family(), { view = "upcoming" })
+  local headings = vim.tbl_filter(function(l) return l:match("^# ") end, upcoming)
+  eq("upcoming has overdue and then every day of the week", #headings, 9)
+  eq("upcoming headings are days", headings[3], "# " .. render.day_heading(tomorrow, 1))
+  check("tomorrow's task sits under tomorrow",
+    upcoming[vim.fn.index(upcoming, headings[3]) + 3] == "- [ ] Tomorrow's task <tomorrow>", vim.inspect(upcoming))
+
+  local buf, st = mount(family(), { view = "upcoming" })
+  local ops, errors = ops_for(buf, st)
+  check("an untouched date view produces no operations", ops and #ops == 0, vim.inspect(errors or ops))
+
+  -- Drag "Tomorrow's task" up under today.
+  buf, st = mount(family(), { view = "upcoming" })
+  local cur = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local from = vim.fn.index(cur, "- [ ] Tomorrow's task <tomorrow>")
+  vim.api.nvim_buf_set_lines(buf, from, from + 1, false, {})
+  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <tomorrow>" })
+  ops = ops_for(buf, st)
+  eq("moving a line to another day reschedules it",
+    #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
+    { "update", "f5", { due_date = today } })
+
+  local timed = family()
+  timed.tasks[5].due = { string = "tomorrow 3pm", date = tomorrow .. "T15:00:00" }
+  buf, st = mount(timed, { view = "upcoming" })
+  cur = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  from = vim.fn.index(cur, "- [ ] Tomorrow's task <tomorrow 3pm>")
+  vim.api.nvim_buf_set_lines(buf, from, from + 1, false, {})
+  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <tomorrow 3pm>" })
+  ops = ops_for(buf, st)
+  eq("rescheduling a timed task keeps its time",
+    #ops == 1 and ops[1].fields or ops, { due_datetime = today .. "T15:00:00" })
+
+  buf, st = mount(family(), { view = "upcoming" })
+  cur = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local at = vim.fn.index(cur, headings[3]) + 1
+  vim.api.nvim_buf_set_lines(buf, at, at, false, { "- [ ] Brand new" })
+  ops = ops_for(buf, st)
+  check("a new line under a day is created in the Inbox, due that day",
+    #ops == 1 and ops[1].kind == "create" and ops[1].project_id == "p1"
+      and ops[1].due_date == tomorrow and ops[1].due_string == nil, vim.inspect(ops))
+
+  buf, st = mount(family(), { view = "today" })
+  vim.api.nvim_buf_set_lines(buf, 8, 8, false, { "    - [ ] New grandchild" })
+  ops = ops_for(buf, st)
+  check("a new subtask in a date view follows its parent",
+    #ops == 1 and ops[1].kind == "create" and ops[1].parent_id == "f2"
+      and ops[1].project_id == nil and ops[1].due_date == nil, vim.inspect(ops))
+
+  buf, st = mount(family(), { view = "today" })
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, {})
+  vim.api.nvim_buf_set_lines(buf, 5, 5, false, { "- [ ] Weekly <every day>" })
+  _, errors = ops_for(buf, st)
+  check("a recurring task cannot be dragged to another day", errors and #errors == 1, vim.inspect(errors))
+
+  buf, st = mount(family(), { view = "today" })
+  vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "# Someday" })
+  _, errors = ops_for(buf, st)
+  check("a heading that is not one of the view's days is an error", errors and #errors == 1, vim.inspect(errors))
 end
 
 do

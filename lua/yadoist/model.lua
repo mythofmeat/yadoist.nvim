@@ -49,6 +49,24 @@ function M.due_date(task)
   return due.date:sub(1, 10)
 end
 
+--- Whether the due date repeats. Rescheduling one of these by date would flatten
+--- it into a one-off, so the date views refuse to.
+function M.is_recurring(task)
+  return type(task.due) == "table" and task.due.is_recurring == true
+end
+
+function M.today()
+  return os.date("%Y-%m-%d")
+end
+
+--- YYYY-MM-DD n days from today. Stepping the day field at noon, rather than
+--- adding n * 86400 seconds, keeps a daylight-saving change from skipping or
+--- repeating a day.
+function M.date_after(n)
+  local now = os.date("*t")
+  return os.date("%Y-%m-%d", os.time({ year = now.year, month = now.month, day = now.day + n, hour = 12 }))
+end
+
 --- The API returns this as `inbox_project`; some responses and SDKs spell it
 --- `is_inbox_project`. Accept either.
 function M.is_inbox(project)

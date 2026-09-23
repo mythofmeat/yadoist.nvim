@@ -95,6 +95,7 @@ function M.apply(ops, done)
         priority = op.priority,
         labels = op.labels,
         due_string = op.due_string,
+        due_date = op.due_date,
       }, function(res, err)
         if err then
           return fail(err)

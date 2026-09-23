@@ -24,6 +24,75 @@ local function labels_equal(a, b)
   return true
 end
 
+--- In project views the headings say where a line lives.
+local function resolve_by_project(ctx, e)
+  e.project_id = ctx.project_ids[e.project]
+  if not e.project_id then
+    return ("no project named %q in Todoist — yadoist does not create projects"):format(e.project)
+  end
+  if e.section then
+    local map = (ctx.section_ids or {})[e.project_id] or {}
+    e.section_id = map[e.section]
+    if not e.section_id then
+      return ("no section named %q in %q — yadoist does not create sections"):format(e.section, e.project)
+    end
+  end
+  return nil
+end
+
+--- Date views have day headings where project views have project headings, so
+--- a line's project comes from somewhere else:
+---
+---   - An existing task stays in its project and section. Moving its line under
+---     another day reschedules it, as dragging it does in Todoist, unless its
+---     `<...>` was edited too, in which case the edit wins.
+---   - A new top-level task goes to the Inbox, due on the day it was added under
+---     unless it says otherwise. Adding one under Overdue needs a date.
+---   - A new subtask goes wherever its parent is, which Todoist infers.
+local function resolve_by_date(by_date, e)
+  local key = by_date.headings[e.project]
+  if key == nil then
+    return ("%q is not one of this view's days — move the task under one of them"):format(e.project)
+  end
+  if e.section then
+    return "date views have no sections; use `all` to move tasks between sections"
+  end
+
+  if e.task then
+    e.project_id, e.section_id = e.task.project_id, e.task.section_id
+    local was, own = by_date.placed[e.task.id], model.due_date(e.task)
+    local moved_day = not e.parent_lnum and was and key ~= was and own
+    if not moved_day or e.due_string ~= model.due_string(e.task) then
+      return nil
+    end
+    if key == by_date.overdue then
+      return "cannot reschedule a task into the past — give it a <date> instead"
+    end
+    if model.is_recurring(e.task) then
+      return "moving a recurring task to another day would make it a one-off — edit its <...> instead"
+    end
+    local time = e.task.due.date:sub(11)
+    if time ~= "" then
+      -- A timed task keeps its time of day on the new date.
+      e.reschedule = { due_datetime = key .. time }
+    else
+      e.reschedule = { due_date = key }
+    end
+  elseif not e.parent_lnum then
+    e.project_id = by_date.inbox_id
+    if not e.project_id then
+      return "no Inbox project to add this to"
+    end
+    if not e.due_string then
+      if key == by_date.overdue then
+        return "a new task under Overdue needs a <date>"
+      end
+      e.due_date = key
+    end
+  end
+  return nil
+end
+
 --- @param ctx table
 ---   entries      parsed buffer entries
 ---   resolve       fun(lnum): task|nil -- live extmark lookup
@@ -31,6 +100,8 @@ end
 ---   known        { [task_id] = task } -- everything we rendered
 ---   project_ids  { [name] = id }
 ---   section_ids  { [project_id] = { [name] = id } }
+---   by_date      date views only: { headings, placed, overdue, inbox_id },
+---                the first three from render (see resolve_by_date)
 --- @return table[] ops, table[] errors
 function M.compute(ctx)
   local entries, known = ctx.entries, ctx.known or {}
@@ -119,21 +190,14 @@ function M.compute(ctx)
   end
 
   for _, e in ipairs(entries) do
-    e.project_id = ctx.project_ids[e.project]
-    if not e.project_id then
-      table.insert(errors, {
-        lnum = e.lnum,
-        msg = ("no project named %q in Todoist — yadoist does not create projects"):format(e.project),
-      })
-    elseif e.section then
-      local map = (ctx.section_ids or {})[e.project_id] or {}
-      e.section_id = map[e.section]
-      if not e.section_id then
-        table.insert(errors, {
-          lnum = e.lnum,
-          msg = ("no section named %q in %q — yadoist does not create sections"):format(e.section, e.project),
-        })
-      end
+    local msg
+    if ctx.by_date then
+      msg = resolve_by_date(ctx.by_date, e)
+    else
+      msg = resolve_by_project(ctx, e)
+    end
+    if msg then
+      table.insert(errors, { lnum = e.lnum, msg = msg })
     end
 
     if e.parent_lnum then
@@ -162,6 +226,7 @@ function M.compute(ctx)
       priority = model.ui_to_api_priority(e.priority),
       labels = e.labels,
       due_string = e.due_string,
+      due_date = e.due_date,
     })
   end
 
@@ -189,6 +254,10 @@ function M.compute(ctx)
         -- Todoist clears a due date when its natural-language parser is handed
         -- "no date", which is what its own UI sends.
         fields.due_string = e.due_string or "no date"
+      elseif e.reschedule then
+        for k, v in pairs(e.reschedule) do
+          fields[k] = v
+        end
       end
 
       if next(fields) then
@@ -199,7 +268,12 @@ function M.compute(ctx)
       -- destination, so promoting a subtask to top level is expressed as a
       -- move to its section or project rather than a null parent.
       local moved, pending_parent = nil, nil
-      if e.parent_lnum then
+      if ctx.by_date and not e.parent_lnum then
+        -- A top-level line in a date view says nothing about where the task
+        -- lives: subtasks are drawn there whenever their parent is under
+        -- another day, so reading it as a promotion would be wrong. It is
+        -- left where it is.
+      elseif e.parent_lnum then
         if not e.parent_id then
           pending_parent = e.parent_lnum -- its parent is created by this same write
         end

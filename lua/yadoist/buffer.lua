@@ -4,6 +4,7 @@ local api = require("yadoist.api")
 local config = require("yadoist.config")
 local diff = require("yadoist.diff")
 local highlight = require("yadoist.highlight")
+local model = require("yadoist.model")
 local parse = require("yadoist.parse")
 local render = require("yadoist.render")
 local sync = require("yadoist.sync")
@@ -90,7 +91,7 @@ function M.render(bufnr)
     cursor = vim.api.nvim_win_get_cursor(win)
   end
 
-  local lines, tasks, highlights = render.build(st.data, {
+  local lines, tasks, highlights, meta = render.build(st.data, {
     projects = config.options.projects,
     view = st.view,
   })
@@ -119,10 +120,24 @@ function M.render(bufnr)
       hl_group = h.group,
     })
   end
+  for _, a in ipairs(meta.annotations or {}) do
+    vim.api.nvim_buf_set_extmark(bufnr, ns_hl, a.lnum - 1, 0, {
+      virt_text = { { a.text, "YadoistAnnotation" } },
+      virt_text_pos = "eol",
+    })
+  end
 
-  st.project_ids, st.section_ids = {}, {}
+  st.project_ids, st.section_ids, st.by_date = {}, {}, nil
   for _, project in ipairs(st.data.projects or {}) do
     st.project_ids[project.name] = project.id
+  end
+  if meta.headings then
+    st.by_date = { headings = meta.headings, placed = meta.placed, overdue = render.OVERDUE }
+    for _, project in ipairs(st.data.projects or {}) do
+      if model.is_inbox(project) then
+        st.by_date.inbox_id = project.id
+      end
+    end
   end
   for _, section in ipairs(st.data.sections or {}) do
     st.section_ids[section.project_id] = st.section_ids[section.project_id] or {}
@@ -192,6 +207,7 @@ local function write(bufnr)
     known = st.known,
     project_ids = st.project_ids or {},
     section_ids = st.section_ids or {},
+    by_date = st.by_date,
   })
   if #resolve_errors > 0 then
     return report(bufnr, resolve_errors)

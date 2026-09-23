@@ -8,9 +8,7 @@ local views = require("yadoist.views")
 
 local M = {}
 
-local function today()
-  return os.date("%Y-%m-%d")
-end
+local today = model.today
 
 --- Render one task, returning the line and its highlight spans as
 --- { group, start_col, end_col } byte offsets.
@@ -71,10 +69,163 @@ local function by_order(a, b)
   return tostring(a.id) < tostring(b.id)
 end
 
+--- The heading for one day, spelled the way Todoist spells it:
+--- "Sep 24 · Tomorrow · Thursday".
+function M.day_heading(date, offset)
+  local y, m, d = date:match("^(%d+)-(%d+)-(%d+)$")
+  local t = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+  local parts = { os.date("%b", t) .. " " .. tonumber(d) }
+  if offset == 0 then
+    table.insert(parts, "Today")
+  elseif offset == 1 then
+    table.insert(parts, "Tomorrow")
+  end
+  table.insert(parts, os.date("%A", t))
+  return table.concat(parts, " · ")
+end
+
+M.OVERDUE = "Overdue"
+
+-- Within a day, Todoist's own manual day order first, then priority, then the
+-- task's place in its project.
+local function by_day(a, b)
+  local function day_order(t)
+    local n = tonumber(t.day_order)
+    return (n and n >= 0) and n or math.huge
+  end
+  local da, db = day_order(a), day_order(b)
+  if da ~= db then
+    return da < db
+  end
+  local pa, pb = tonumber(a.priority) or 1, tonumber(b.priority) or 1
+  if pa ~= pb then
+    return pa > pb
+  end
+  return by_order(a, b)
+end
+
+--- The date views: `# Overdue` first when there is anything overdue, then one
+--- heading per day, every day drawn even when empty so there is somewhere to
+--- add a task for it.
+---
+--- A task sits under its own due date when it matches the view on its own, and
+--- under its parent otherwise — so a subtask due today whose parent is due next
+--- week still shows up today, and an undated subtask follows its parent. A task
+--- is nested under its parent only when both land under the same heading.
+local function build_by_date(data, view, present, project_names)
+  local now = today()
+  local by_id = {}
+  for _, task in ipairs(data.tasks or {}) do
+    by_id[task.id] = task
+  end
+
+  local placed = {}
+  local function bucket(task)
+    if placed[task.id] == nil then
+      local key = false
+      if view.matches(task, {}) then
+        local date = model.due_date(task)
+        key = date < now and M.OVERDUE or date
+      else
+        local parent = task.parent_id and present[task.parent_id] or nil
+        key = parent and bucket(parent) or false
+      end
+      placed[task.id] = key
+    end
+    return placed[task.id]
+  end
+
+  local children, roots = {}, {}
+  for _, task in pairs(present) do
+    local key = bucket(task)
+    if key then
+      local parent = task.parent_id and present[task.parent_id] or nil
+      if parent and bucket(parent) == key then
+        children[parent.id] = children[parent.id] or {}
+        table.insert(children[parent.id], task)
+      else
+        roots[key] = roots[key] or {}
+        table.insert(roots[key], task)
+      end
+    end
+  end
+
+  local lines, tasks, highlights = {}, {}, {}
+  local meta = { headings = {}, placed = {}, annotations = {} }
+
+  local function push(text)
+    table.insert(lines, text)
+    return #lines
+  end
+
+  local function emit(task, depth, key)
+    local text, spans = M.task_line(task, depth)
+    local lnum = push(text)
+    table.insert(tasks, { lnum = lnum, task = task })
+    meta.placed[task.id] = key
+    for _, span in ipairs(spans) do
+      table.insert(highlights, { lnum = lnum, group = span[1], from = span[2], to = span[3] })
+    end
+    if depth == 0 then
+      -- Where the task lives, since the headings no longer say. Virtual text,
+      -- so it is never read back as part of the task.
+      local where = project_names[task.project_id] or "?"
+      local parent = task.parent_id and by_id[task.parent_id] or nil
+      if parent then
+        where = where .. " › " .. tostring(parent.content)
+      end
+      table.insert(meta.annotations, { lnum = lnum, text = where })
+    end
+    local kids = children[task.id]
+    if kids then
+      table.sort(kids, by_order)
+      for _, kid in ipairs(kids) do
+        emit(kid, depth + 1, key)
+      end
+    end
+  end
+
+  local function heading(key, text)
+    if #lines > 0 then
+      push("")
+    end
+    local lnum = push("# " .. text)
+    meta.headings[text] = key
+    table.insert(highlights, {
+      lnum = lnum,
+      group = key == M.OVERDUE and "YadoistDueOverdue" or "YadoistProject",
+      from = 0,
+      to = #lines[lnum],
+    })
+    push("")
+    local list = roots[key] or {}
+    table.sort(list, by_day)
+    for _, task in ipairs(list) do
+      emit(task, 0, key)
+    end
+  end
+
+  if roots[M.OVERDUE] then
+    heading(M.OVERDUE, M.OVERDUE)
+  end
+  for offset = 0, view.days or 0 do
+    local date = model.date_after(offset)
+    heading(date, M.day_heading(date, offset))
+  end
+
+  while #lines > 0 and lines[#lines] == "" do
+    table.remove(lines)
+  end
+  return lines, tasks, highlights, meta
+end
+
 --- Build the whole buffer.
 ---@param data table { projects, sections, tasks }
 ---@param opts table|nil { projects = string[], view = string }
----@return string[] lines, table[] tasks, table[] highlights
+---@return string[] lines, table[] tasks, table[] highlights, table meta
+---   meta, for date views only: headings { [text] = date|"Overdue" },
+---   placed { [task_id] = the heading key it was drawn under },
+---   annotations { lnum, text }[] to show beside a line
 function M.build(data, opts)
   opts = opts or {}
   local view = views.get(opts.view)
@@ -110,15 +261,25 @@ function M.build(data, opts)
     end
   end
 
+  local project_names = {}
+  for _, project in ipairs(projects) do
+    project_names[project.id] = project.name
+  end
+
   local present = {}
   for _, task in ipairs(data.tasks or {}) do
     local visible = task.is_deleted ~= true
       and live_projects[task.project_id]
       and (task.section_id == nil or live_sections[task.section_id])
       and (included == nil or included[task.id])
+      and (allow == nil or allow[project_names[task.project_id]])
     if visible then
       present[task.id] = task
     end
+  end
+
+  if view.group_by == "date" then
+    return build_by_date(data, view, present, project_names)
   end
 
   local children, roots = {}, {}
@@ -225,7 +386,7 @@ function M.build(data, opts)
     lines = { ("# (nothing in %s)"):format(view.label) }
   end
 
-  return lines, tasks, highlights
+  return lines, tasks, highlights, {}
 end
 
 return M
