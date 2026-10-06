@@ -128,6 +128,7 @@ file your edits under yesterday's days.
 | `@errand` | a label |
 | `!p1` … `!p4` | priority, matching the names Todoist shows |
 | `<tomorrow>` | a due date |
+| indented text under a task | its description |
 
 Anything inside `<...>` is handed to Todoist's own natural-language date parser
 untouched, so `<friday at 5pm>`, `<every 2nd tuesday>` and `<in 3 days>` all
@@ -140,6 +141,25 @@ buffer reads the same way.
 
 Labels, priorities and dates are only recognised at the end of a line, so a task
 like `email bob@example.com` keeps its address instead of growing a label.
+
+### Descriptions
+
+A task's description is drawn under it, indented one step past the task:
+
+```markdown
+- [ ] Buy milk @errand
+  2% from the corner shop, not the big one
+
+  the one by the station closes at 6
+  - [ ] Check the fridge first
+```
+
+Edit those lines to change it, add some under any task to give it one, and
+delete them all to clear it. Any indented line that is not a `- [ ]` belongs to
+the task directly above it, and blank lines between its lines are kept as
+paragraph breaks. A line starting with `- [ ]` is always a subtask, so a
+description cannot hold a checklist. Closing a task's fold hides its
+description along with its subtasks.
 
 ### Recurring tasks
 

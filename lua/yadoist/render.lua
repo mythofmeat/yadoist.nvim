@@ -61,6 +61,20 @@ function M.task_line(task, depth)
   return line, spans
 end
 
+--- The lines drawn under a task for its description, indented one level past
+--- the task so they fold with it. A blank line in it stays blank.
+function M.description_lines(task, depth)
+  local d = model.description(task)
+  if d == "" then
+    return {}
+  end
+  local indent, out = string.rep("  ", depth + 1), {}
+  for _, line in ipairs(vim.split(d, "\n", { plain = true })) do
+    table.insert(out, line:match("^%s*$") and "" or (indent .. line))
+  end
+  return out
+end
+
 local function by_order(a, b)
   local oa, ob = model.order(a), model.order(b)
   if oa ~= ob then
@@ -165,6 +179,10 @@ local function build_by_date(data, view, present, project_names)
     meta.placed[task.id] = key
     for _, span in ipairs(spans) do
       table.insert(highlights, { lnum = lnum, group = span[1], from = span[2], to = span[3] })
+    end
+    for _, line in ipairs(M.description_lines(task, depth)) do
+      local dlnum = push(line)
+      table.insert(highlights, { lnum = dlnum, group = "YadoistDescription", from = 0, to = #line })
     end
     if depth == 0 then
       -- Where the task lives, since the headings no longer say. Virtual text,
@@ -322,6 +340,10 @@ function M.build(data, opts)
     table.insert(tasks, { lnum = lnum, task = task })
     for _, span in ipairs(spans) do
       table.insert(highlights, { lnum = lnum, group = span[1], from = span[2], to = span[3] })
+    end
+    for _, line in ipairs(M.description_lines(task, depth)) do
+      local dlnum = push(line)
+      table.insert(highlights, { lnum = dlnum, group = "YadoistDescription", from = 0, to = #line })
     end
     local kids = children[task.id]
     if kids then

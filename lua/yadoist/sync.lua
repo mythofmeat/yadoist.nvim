@@ -87,13 +87,14 @@ local function commands_for(ops)
         priority = op.priority,
         labels = op.labels,
         due = due_of(op),
+        description = op.description,
       }, tmp)
       if op.done then
         add(op, "item_close", { id = tmp })
       end
     elseif op.kind == "update" then
       local args = { id = op.id }
-      for _, key in ipairs({ "content", "priority", "labels" }) do
+      for _, key in ipairs({ "content", "priority", "labels", "description" }) do
         args[key] = op.fields[key]
       end
       args.due = due_of(op.fields)

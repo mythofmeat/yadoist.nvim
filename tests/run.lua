@@ -444,6 +444,88 @@ do
     #ops == 1 and { ops[1].kind, ops[1].project_id } or ops, { "create", "p5" })
 end
 
+print("\ndescriptions")
+do
+  local function described(description)
+    local data = fixture()
+    data.tasks[1].description = description
+    return data
+  end
+
+  local tricky = "2% from the corner shop\n\nsecond paragraph\n  # indented further\nnot a #heading"
+  local lines = render.build(described(tricky))
+  eq("a description is drawn under its task, indented", { unpack(lines, 3, 9) }, {
+    "- [ ] Buy milk @errand !p2 <2099-01-01>",
+    "  2% from the corner shop",
+    "",
+    "  second paragraph",
+    "    # indented further",
+    "  not a #heading",
+    "",
+  })
+
+  local entries, errors = parse.buffer(lines)
+  eq("a description reads back exactly, paragraphs and extra indent included",
+    #errors == 0 and entries[1].description or errors, tricky)
+  eq("a task without one reads back as empty", entries[2].description, "")
+
+  local buf, st = mount(described(tricky))
+  local ops, errs = ops_for(buf, st)
+  check("an untouched description produces no operations", ops and #ops == 0, vim.inspect(errs or ops))
+
+  buf, st = mount(described("\n\nleading and trailing junk  \r\n  \r\nmore\n\n  "))
+  ops = ops_for(buf, st)
+  check("line endings and trailing blanks are not edits", ops and #ops == 0, vim.inspect(ops))
+
+  buf, st = mount(described("old"))
+  vim.api.nvim_buf_set_lines(buf, 3, 4, false, { "  new", "  second line" })
+  ops = ops_for(buf, st)
+  eq("editing a description updates it",
+    #ops == 1 and ops[1].fields or ops, { description = "new\nsecond line" })
+
+  buf, st = mount(described("old"))
+  vim.api.nvim_buf_set_lines(buf, 3, 4, false, {})
+  ops = ops_for(buf, st)
+  eq("deleting every description line clears it",
+    #ops == 1 and ops[1].fields or ops, { description = "" })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "  added later" })
+  ops = ops_for(buf, st)
+  eq("adding a description to an existing task", #ops == 1 and ops[1].fields or ops, { description = "added later" })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 2, 2, false, { "- [ ] New thing", "  with notes" })
+  ops = ops_for(buf, st)
+  eq("a new task carries its description",
+    #ops == 1 and { ops[1].kind, ops[1].description } or ops, { "create", "with notes" })
+  local cmd = sync._commands_for(ops)[1].command
+  eq("and sends it to Todoist", cmd.args.description, "with notes")
+
+  local _, orphan = parse.buffer({ "# Inbox", "", "  floating" })
+  eq("a description with no task above it is an error", orphan[1] and orphan[1].msg, "description has no task above it")
+
+  local nested = fixture()
+  nested.tasks[3].description = "the big one"
+  eq("a subtask's description is indented past the subtask",
+    render.build(nested)[9], "    the big one")
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 2, 2, false, { "- [ ] Parent", "  notes", "", "  - [ ] Child" })
+  ops = ops_for(buf, st)
+  eq("a gap before a subtask is not part of the parent's description",
+    #ops == 2 and { ops[1].description, ops[2].description } or ops, { "notes", nil })
+
+  local _, unindented = parse.buffer({ "# Inbox", "", "- [ ] Task", "loose text" })
+  check("unindented text is still an error", #unindented == 1, vim.inspect(unindented))
+
+  local today = os.date("%Y-%m-%d")
+  local dated = described("for today")
+  dated.tasks[1].due = { string = today, date = today }
+  local day = render.build(dated, { view = "today" })
+  check("date views draw descriptions too", vim.tbl_contains(day, "  for today"), vim.inspect(day))
+end
+
 print("\ndate views")
 do
   local today = model.today()

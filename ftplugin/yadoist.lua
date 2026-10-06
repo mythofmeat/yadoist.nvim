@@ -12,9 +12,11 @@ function _G.YadoistFold(lnum)
   if hashes then
     return ">" .. math.min(#hashes, 2)
   end
-  local indent = line:match("^(%s*)%- %[[ xX]%]")
+  -- A description line folds at its task's subtask level, so closing the fold
+  -- on a task tucks its description away with its subtasks.
+  local indent = line:match("^(%s*)%- %[[ xX]%]") or line:match("^(%s+)%S")
   if indent then
-    return tostring(3 + #indent / 2)
+    return tostring(3 + math.floor(#indent / 2))
   end
   return "="
 end

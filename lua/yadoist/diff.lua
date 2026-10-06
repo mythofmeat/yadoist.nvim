@@ -245,6 +245,7 @@ function M.compute(ctx)
       labels = e.labels,
       due_string = e.due_string,
       due_date = e.due_date,
+      description = e.description ~= "" and e.description or nil,
     })
   end
 
@@ -256,6 +257,10 @@ function M.compute(ctx)
 
       if e.content ~= task.content then
         fields.content = e.content
+      end
+
+      if e.description ~= nil and e.description ~= model.description(task) then
+        fields.description = e.description
       end
 
       local priority = model.ui_to_api_priority(e.priority)

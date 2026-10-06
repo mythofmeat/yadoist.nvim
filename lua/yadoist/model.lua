@@ -98,6 +98,16 @@ function M.is_inbox(project)
   return project.inbox_project == true or project.is_inbox_project == true
 end
 
+--- The description as the buffer shows it: Unix line endings, no blank lines
+--- at either end, no trailing whitespace on any line, and whitespace-only
+--- lines left empty. Comparing these rather than the raw strings keeps
+--- differences the buffer cannot show from reading as edits.
+function M.description(task)
+  local d = type(task.description) == "string" and task.description or ""
+  d = d:gsub("\r\n?", "\n"):gsub("[ \t]+\n", "\n"):gsub("^%s*\n", ""):gsub("%s+$", "")
+  return d
+end
+
 function M.labels(task)
   local out = {}
   for _, l in ipairs(task.labels or {}) do
