@@ -230,6 +230,7 @@ function M.build(data, opts)
   opts = opts or {}
   local view = views.get(opts.view)
   local included = views.included(view, data)
+  local scope = views.scope(view, data)
 
   local allow
   if opts.projects then
@@ -355,7 +356,11 @@ function M.build(data, opts)
   end
 
   for _, project in ipairs(projects) do
-    local skip = (allow and not allow[project.name]) or (view.prune_empty and not has_tasks(project))
+    -- A project view draws every project it covers, empty or not, so there is
+    -- always a heading to add a task under, and nothing else.
+    local skip = (allow and not allow[project.name])
+      or (scope and not scope[project.id])
+      or (view.prune_empty and not has_tasks(project))
     if not skip then
       if #lines > 0 then
         push("")

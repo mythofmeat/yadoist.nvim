@@ -185,6 +185,12 @@ function M.refresh(bufnr, opts)
     end
     st.data = data
     M.render(bufnr)
+    local view = views.get(st.view)
+    if view.project and #views.find_projects(view.project, data.projects) == 0 then
+      local close = views.suggest(view.project, data.projects)
+      return notify(("no project called %q%s"):format(view.project,
+        #close > 0 and (" — did you mean " .. table.concat(close, ", ") .. "?") or ""), vim.log.levels.ERROR)
+    end
     if opts.announce then
       local shown = 0
       for _ in pairs(st.known or {}) do
@@ -341,8 +347,43 @@ local function attach(bufnr)
   map(maps.close, function() vim.cmd("bdelete") end, "yadoist: close")
 end
 
+--- Project names from whatever has been fetched so far, for completion. Empty
+--- until a task buffer has loaded once.
+function M.project_names()
+  for _, st in pairs(state) do
+    if st.data then
+      local names = {}
+      for _, project in ipairs(st.data.projects or {}) do
+        if project.is_deleted ~= true and project.is_archived ~= true then
+          table.insert(names, project.name)
+        end
+      end
+      return names
+    end
+  end
+  return {}
+end
+
+--- Spell a project view's name the way Todoist does when that is already
+--- known, so `project work` and `project Work` share a buffer.
+local function canonical(name)
+  local project = views.project_name(name)
+  if not project then
+    return name
+  end
+  for _, have in ipairs(M.project_names()) do
+    if have:lower() == project:lower() then
+      return "project/" .. have
+    end
+  end
+  return name
+end
+
 function M.open(name)
-  local view, view_name = views.get(name)
+  if name and name:match("^project%s*$") then
+    return notify("which project? — :Yadoist project <name>", vim.log.levels.ERROR)
+  end
+  local view, view_name = views.get(canonical(name))
   if not view then
     return notify(("no view called %q — try one of: %s"):format(
       tostring(name), table.concat(views.names(), ", ")), vim.log.levels.ERROR)

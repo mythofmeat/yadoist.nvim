@@ -8,8 +8,8 @@ function M.setup(opts)
   require("yadoist.highlight").setup()
 end
 
---- Open the task buffer in a view: "all", "today", "upcoming", "overdue" or
---- "inbox". Defaults to "all".
+--- Open the task buffer in a view: "all", "today", "upcoming", "overdue",
+--- "inbox", or "project <name>". Defaults to "all".
 function M.open(view)
   return require("yadoist.buffer").open(view)
 end

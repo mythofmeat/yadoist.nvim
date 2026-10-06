@@ -52,6 +52,7 @@ Run `:Yadoist`.
 | `upcoming` | overdue, then each of the next seven days |
 | `overdue` | past its due date and still open |
 | `inbox` | the Inbox project on its own |
+| `project <name>` | one project and its subprojects |
 
 A view is only a filter. The buffer grammar never changes, and every edit works
 the same way whichever view you are looking at, so you can complete and retitle
@@ -61,10 +62,17 @@ other. Tasks a view hides are never mistaken for deleted ones.
 
 ### Project views
 
-`all`, `overdue` and `inbox` are grouped by project, with `# Project` headings. A
-matching task always brings its parent along, so a subtask is never shown
-without the task it belongs to. Filtered views leave out projects with nothing
-in them, so `all` is where you go to add a task to an empty project.
+`all`, `overdue`, `inbox` and `project` are grouped by project, with `# Project`
+headings. A matching task always brings its parent along, so a subtask is never
+shown without the task it belongs to. `overdue` and `inbox` leave out projects
+with nothing in them, so use `all` or `project <name>` to add a task to an
+empty project.
+
+`:Yadoist project Work` shows `Work` and every project nested under it. Names
+are matched ignoring case and may contain spaces (`:Yadoist project House
+Chores`). Project names tab-complete once any task buffer has loaded. Every
+project the view covers is drawn even when empty, sections included, so there
+is always a heading to add a task under.
 
 ### Date views
 

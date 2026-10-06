@@ -387,6 +387,63 @@ do
     #ops == 1 and { ops[1].kind, ops[1].id } or ops, { "update", "d1" })
 end
 
+print("\nproject views")
+do
+  local views = require("yadoist.views")
+
+  local function nested()
+    return {
+      projects = {
+        { id = "p1", name = "Inbox", is_inbox_project = true, child_order = 1 },
+        { id = "p2", name = "Work", child_order = 2 },
+        { id = "p3", name = "Clients", parent_id = "p2", child_order = 3 },
+        { id = "p4", name = "Home", child_order = 4 },
+        { id = "p5", name = "Empty", child_order = 5 },
+      },
+      sections = {
+        { id = "s1", project_id = "p2", name = "Meetings", child_order = 1 },
+        { id = "s2", project_id = "p5", name = "Ideas", child_order = 1 },
+      },
+      tasks = {
+        task("w1", "Ship it", { project_id = "p2" }),
+        task("w2", "Call Acme", { project_id = "p3" }),
+        task("h1", "Mow", { project_id = "p4" }),
+        task("i1", "Inbox thing", {}),
+      },
+    }
+  end
+
+  eq("`project X` and `project/X` name the same view",
+    { select(2, views.get("project Work")), select(2, views.get("project/Work")) },
+    { "project/Work", "project/Work" })
+  eq("a bare `project` is not a view", views.project_name("project"), nil)
+
+  eq("a project view shows the project and its subprojects, nothing else",
+    render.build(nested(), { view = "project/Work" }), {
+      "# Work", "", "- [ ] Ship it", "", "## Meetings", "",
+      "", "# Clients", "", "- [ ] Call Acme",
+    })
+  eq("project names match ignoring case",
+    render.build(nested(), { view = "project work" }), render.build(nested(), { view = "project/Work" }))
+  eq("an empty project still gets its heading and sections",
+    render.build(nested(), { view = "project/Empty" }), { "# Empty", "", "", "## Ideas" })
+  eq("an unknown project draws nothing",
+    render.build(nested(), { view = "project/Nope" }), { "# (nothing in project Nope)" })
+  eq("unknown names suggest close ones",
+    views.suggest("work stuff", nested().projects), { "Work" })
+
+  local buf, st = mount(nested(), { view = "project/Work" })
+  local ops, errors = ops_for(buf, st)
+  check("an untouched project view produces no operations", ops and #ops == 0,
+    vim.inspect(errors or ops))
+
+  buf, st = mount(nested(), { view = "project/Empty" })
+  vim.api.nvim_buf_set_lines(buf, 1, 1, false, { "- [ ] First idea" })
+  ops = ops_for(buf, st)
+  eq("a task added to an empty project view lands in that project",
+    #ops == 1 and { ops[1].kind, ops[1].project_id } or ops, { "create", "p5" })
+end
+
 print("\ndate views")
 do
   local today = model.today()
