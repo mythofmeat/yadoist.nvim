@@ -7,6 +7,15 @@ local model = require("yadoist.model")
 local dapi = require("yadoist.api")
 local sync = require("yadoist.sync")
 local buffer = require("yadoist.buffer")
+local store = require("yadoist.store")
+
+-- Never the real token, and never the network: a test that needs Todoist
+-- puts a fake in front of api.request itself.
+require("yadoist.config").setup({ token = "test-token" })
+local http = dapi.request
+dapi.request = function(method, path)
+  error(("a test reached the network: %s %s"):format(method, path))
+end
 
 local passed, failed = 0, 0
 
@@ -1020,25 +1029,32 @@ do
     { "item_uncomplete", nil, "t4" },
   })
 
-  -- A fake Sync endpoint: records requests, maps temp ids, fails on demand.
-  local real, requests = dapi.sync, {}
-  local flaky = true
-  dapi.sync = function(commands, cb)
-    table.insert(requests, vim.deepcopy(commands))
-    if flaky then
-      flaky = false
-      return cb(nil, "curl failed (exit 28)")
-    end
-    local status, mapping = {}, {}
-    for _, c in ipairs(commands) do
-      status[c.uuid] = c.args.content == "bad" and { error = "Invalid argument value" } or "ok"
-      if c.temp_id then
-        mapping[c.temp_id] = "real-" .. c.temp_id
+  -- A fake Sync endpoint behind the HTTP layer, so the retries and the store
+  -- run for real: it records requests, maps temp ids, and drops the first
+  -- request the way a lost connection does.
+  local real_request, real_backoff = dapi.request, dapi.backoff
+  local requests, bodies, flaky = {}, {}, true
+  dapi.backoff = function() return 0 end
+  dapi.request = function(_, _, body, cb)
+    table.insert(requests, vim.deepcopy(body.commands or {}))
+    table.insert(bodies, vim.deepcopy(body))
+    vim.schedule(function()
+      if flaky then
+        flaky = false
+        return cb(nil, "curl failed (exit 28)", { retry = true })
       end
-    end
-    cb({ sync_status = status, temp_id_mapping = mapping })
+      local status, mapping = {}, {}
+      for _, c in ipairs(body.commands or {}) do
+        status[c.uuid] = c.args.content == "bad" and { error = "Invalid argument value" } or "ok"
+        if c.temp_id then
+          mapping[c.temp_id] = "real-" .. c.temp_id
+        end
+      end
+      cb({ sync_status = status, temp_id_mapping = mapping, sync_token = "t" .. #requests }, nil, { status = 200 })
+    end)
   end
 
+  store.reset()
   local ops = {}
   for i = 1, 120 do
     table.insert(ops, { kind = "create", lnum = i, content = "task " .. i, priority = 1, labels = {} })
@@ -1047,7 +1063,8 @@ do
   ops[50].content = "bad"
   local result
   sync.apply(ops, function(r) result = r end)
-  dapi.sync = real
+  vim.wait(2000, function() return result ~= nil end)
+  dapi.request, dapi.backoff = real_request, real_backoff
 
   eq("120 commands go in two requests, the first one retried",
     vim.tbl_map(function(r) return #r end, requests), { 100, 100, 20 })
@@ -1056,7 +1073,116 @@ do
     requests[3][20].args.parent_id, "real-yadoist-line-1")
   check("a failed command is reported and the rest counted",
     result and result.applied == 119 and #result.errors == 1
-      and result.errors[1]:find("Invalid argument value", 1, true) ~= nil, vim.inspect(result))
+      and result.errors[1]:find("Invalid argument value", 1, true) ~= nil, vim.inspect(result and result.errors))
+  check("and which op it was is known", result and result.failed[ops[50]] == "Invalid argument value")
+  eq("each request reads back what changed, from the last token",
+    { bodies[1].sync_token, bodies[3].sync_token, bodies[3].resource_types },
+    { "*", "t2", { "items", "projects", "sections", "labels" } })
+end
+
+print("\nretries")
+do
+  local real_request, real_backoff = dapi.request, dapi.backoff
+  dapi.backoff = function() return 0 end
+  local function attempts(replies)
+    local n = 0
+    dapi.request = function(_, _, _, cb)
+      n = n + 1
+      local reply = replies[math.min(n, #replies)]
+      vim.schedule(function()
+        cb(reply.ok, reply.err, reply.info or {})
+      end)
+    end
+    local outcome
+    dapi.call("POST", "/sync", {}, function(res, err) outcome = { res = res, err = err } end)
+    vim.wait(2000, function() return outcome ~= nil end)
+    return n, outcome
+  end
+  local n, out = attempts({ { err = "curl failed (exit 7)", info = { retry = true } }, { ok = { fine = true } } })
+  check("a dropped connection is tried again", n == 2 and out.res and out.res.fine, vim.inspect({ n, out }))
+  n = attempts({ { err = "HTTP 503", info = { status = 503, retry = true } } })
+  eq("a server error is tried twice more, then given up", n, 3)
+  n = attempts({ { err = "HTTP 400: Invalid argument", info = { status = 400 } } })
+  eq("a 400 is not tried again", n, 1)
+  n = attempts({ { err = "HTTP 401", info = { status = 401 } } })
+  eq("nor is a 401", n, 1)
+  local waited
+  dapi.backoff = function() return 0 end
+  local real_defer = vim.defer_fn
+  vim.defer_fn = function(fn, ms) waited = ms; return real_defer(fn, 0) end
+  n = attempts({ { err = "HTTP 429", info = { status = 429, retry = true, retry_after = 2 } }, { ok = true } })
+  vim.defer_fn = real_defer
+  check("a 429 is tried again after the wait it asks for", n == 2 and waited == 2000, vim.inspect({ n, waited }))
+  n, out = attempts({ { err = "HTTP 429", info = { status = 429, retry = true, retry_after = 600 } } })
+  check("but not when it asks for longer than is worth waiting", n == 1 and out.err:find("wait 600s", 1, true) ~= nil,
+    vim.inspect({ n, out }))
+  dapi.request, dapi.backoff = real_request, real_backoff
+
+  -- vim.system throws, rather than calling back, when curl cannot be run.
+  local real_system = vim.system
+  vim.system = function() error("ENOENT: no such file or directory (cmd): 'curl'") end
+  local got
+  http("GET", "/x", nil, function(res, err) got = { res = res, err = err } end)
+  vim.system = real_system
+  vim.wait(1000, function() return got ~= nil end)
+  check("curl that cannot be run is reported, not thrown", got and got.res == nil and got.err:find("could not run curl", 1, true) ~= nil,
+    vim.inspect(got))
+
+  local body, status, after = dapi._split_status('{"error":"slow down"}\n429 30')
+  eq("reads Retry-After after the status", { body, status, after }, { '{"error":"slow down"}', 429, 30 })
+  _, status, after = dapi._split_status("\n200 %header{retry-after}")
+  eq("and copes with a curl too old to fill it in", { status, after }, { 200, nil })
+end
+
+print("\nstore")
+do
+  local real_request = dapi.request
+  local replies, sent = {}, {}
+  dapi.request = function(_, _, body, cb)
+    table.insert(sent, body)
+    local reply = table.remove(replies, 1)
+    vim.schedule(function() cb(reply, nil, { status = 200 }) end)
+  end
+  local function read()
+    local data
+    store.read(function(d) data = d end)
+    vim.wait(1000, function() return data ~= nil end)
+    return data
+  end
+  store.reset()
+  replies = {
+    { full_sync = true, sync_token = "a", items = { task("x1", "One"), task("x2", "Two") },
+      projects = { { id = "p1", name = "Inbox", inbox_project = true } } },
+    { full_sync = false, sync_token = "b", items = {
+      task("x1", "One, renamed"),
+      task("x2", "Two", { checked = true, completed_at = "2026-10-22T01:00:00Z" }),
+      task("x3", "Three"),
+    }, projects = {} },
+    { full_sync = false, sync_token = "c", items = { task("x3", "Three", { is_deleted = true }) } },
+  }
+  local data = read()
+  eq("the first read takes everything", vim.tbl_map(function(t) return t.id end, data.tasks), { "x1", "x2" })
+  data = read()
+  eq("a later one merges only what changed, and drops completed tasks",
+    vim.tbl_map(function(t) return t.content end, data.tasks), { "One, renamed", "Three" })
+  data = read()
+  eq("and deleted ones", vim.tbl_map(function(t) return t.id end, data.tasks), { "x1" })
+  eq("each from the token the last one gave", vim.tbl_map(function(b) return b.sync_token end, sent), { "*", "a", "b" })
+  eq("and the projects are kept between reads", #data.projects, 1)
+
+  -- Two reads in flight at once, answered out of order: the late, older
+  -- answer must not undo the newer one.
+  store.reset()
+  local held = {}
+  dapi.request = function(_, _, body, cb) table.insert(held, { body = body, cb = cb }) end
+  local done = 0
+  store.read(function() done = done + 1 end)
+  store.read(function() done = done + 1 end)
+  held[2].cb({ full_sync = true, sync_token = "new", items = { task("y1", "Newer") } }, nil, {})
+  held[1].cb({ full_sync = true, sync_token = "old", items = { task("y1", "Older") } }, nil, {})
+  eq("a reply that arrives after a newer one is not merged", store.snapshot().tasks[1].content, "Newer")
+  dapi.request = real_request
+  store.reset()
 end
 
 ----------------------------------------------------------------- due display
@@ -1167,7 +1293,8 @@ do
   local want = ('{"content":"say \\"hi\\""}'):gsub("\\", "\\\\"):gsub('"', '\\"')
   check("escapes the body for curl's config parser", cfg:find(want, 1, true) ~= nil, cfg .. "\n       want substring: " .. want)
   check("escapes backslashes in the token", cfg:find("Bearer tok\\\\en", 1, true) ~= nil, cfg)
-  check("asks curl for the status code", cfg:find('write%-out = "\\n%%{http_code}"') ~= nil, cfg)
+  check("asks curl for the status code and Retry-After",
+    cfg:find('write-out = "\\n%{http_code} %header{retry-after}"', 1, true) ~= nil, cfg)
 
   local body, status = dapi._split_status('{"id":"1"}\n200')
   eq("splits body from status", { body, status }, { '{"id":"1"}', 200 })

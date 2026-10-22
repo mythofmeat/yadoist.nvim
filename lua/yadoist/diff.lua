@@ -207,6 +207,7 @@ end
 ---   by_date      date views only: { headings, placed, overdue, inbox_id },
 ---                the first three from render (see resolve_by_date)
 --- @return table[] ops, table[] errors, table info
+---   Each op that comes from a task line has that line's entry as op.entry.
 ---   info.headings_removed: how many drawn headings no longer have a line
 function M.compute(ctx)
   local entries, known = ctx.entries, ctx.known or {}
@@ -385,6 +386,7 @@ function M.compute(ctx)
       due_string = e.due_string,
       due_date = e.due_date,
       description = e.description ~= "" and e.description or nil,
+      entry = e,
     })
   end
 
@@ -422,7 +424,7 @@ function M.compute(ctx)
       end
 
       if next(fields) then
-        table.insert(ops, { kind = "update", id = task.id, content = task.content, fields = fields })
+        table.insert(ops, { kind = "update", id = task.id, content = task.content, fields = fields, entry = e })
       end
 
       -- Moves. Todoist's move endpoint wants exactly one non-null
@@ -459,6 +461,7 @@ function M.compute(ctx)
           content = task.content,
           fields = moved,
           parent_lnum = pending_parent,
+          entry = e,
         })
       end
 
@@ -467,6 +470,7 @@ function M.compute(ctx)
           kind = e.done and "close" or "reopen",
           id = task.id,
           content = task.content,
+          entry = e,
         })
       end
     end

@@ -29,7 +29,9 @@ local defaults = {
 
   keymaps = {
     toggle = "<CR>", -- flip the checkbox under the cursor
-    refresh = "R",
+    -- Re-fetch, asking first if there are unsaved edits. Not R, which is
+    -- Replace mode and worth keeping in a buffer you edit.
+    refresh = "gr",
     close = "q",
   },
 }

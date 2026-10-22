@@ -2,8 +2,72 @@
 -- it. From the repo root:
 --   nvim --headless -u NONE -i NONE -l tests/lifecycle.lua
 vim.opt.rtp:prepend(".")
-package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
+package.path = "./lua/?.lua;./lua/?/init.lua;./tests/?.lua;" .. package.path
 vim.cmd("filetype plugin on | runtime plugin/yadoist.lua")
+
+local api = require("yadoist.api")
+local buffer = require("yadoist.buffer")
+local store = require("yadoist.store")
+local fake = require("fake_todoist")
+
+-- The real request, kept for the test that needs it to fail before it
+-- reaches the network; everything else talks to a fake Todoist.
+local http = api.request
+api.backoff = function()
+  return 1
+end
+
+local notes, answer = {}, 2
+vim.notify = function(msg)
+  table.insert(notes, msg)
+end
+vim.fn.confirm = function()
+  return answer
+end
+require("yadoist").setup({ token = "test-token", refresh_on_focus = true })
+
+local function seed()
+  local function t(id, content, o)
+    return vim.tbl_extend("force", { id = id, content = content, project_id = "p1", labels = {}, priority = 1, child_order = 1 }, o or {})
+  end
+  return {
+    projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 }, { id = "p2", name = "Work", child_order = 1 } },
+    sections = {},
+    labels = {},
+    tasks = { t("a", "Alpha", { child_order = 1 }), t("b", "Bravo", { child_order = 2 }) },
+  }
+end
+
+local server
+
+local function settled(b)
+  return vim.wait(2000, function()
+    local st = buffer._state[b]
+    return st ~= nil and st.data ~= nil and not st.busy
+  end, 5)
+end
+
+--- A fresh fake Todoist, and a view of it opened the way :Yadoist does.
+local function fresh(view, data)
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(b):find("^yadoist://") then
+      vim.api.nvim_buf_delete(b, { force = true })
+    end
+  end
+  vim.cmd("only")
+  store.reset()
+  server = fake.install(api, data or seed())
+  answer = 2
+  local b = buffer.open(view or "all")
+  settled(b)
+  notes = {}
+  server.take()
+  return b
+end
+
+local function lines(b)
+  return vim.api.nvim_buf_get_lines(b, 0, -1, false)
+end
 
 local passed, failed = 0, 0
 local function check(name, ok, detail)
@@ -59,6 +123,205 @@ do
     return vim.wo.foldmethod == "expr"
   end)(), "foldmethod=" .. vim.wo.foldmethod)
   vim.cmd("only")
+end
+
+print("\nopening")
+do
+  local b = fresh()
+  check("opens with the tasks drawn", vim.deep_equal(lines(b), { "# Inbox", "", "- [ ] Alpha", "- [ ] Bravo", "", "# Work" }),
+    vim.inspect(lines(b)))
+  check("after :Yadoist the window folds with the plugin's foldexpr", vim.wo.foldmethod == "expr",
+    "foldmethod=" .. vim.wo.foldmethod)
+  check("one request read everything", #server.log == 1 and server.log[1].path == "/sync"
+    and server.log[1].body.sync_token == "*", vim.inspect(server.log))
+
+  vim.api.nvim_feedkeys("q", "x", false) -- the plugin's close mapping (:bdelete)
+  b = buffer.open("all")
+  settled(b)
+  local maps = vim.tbl_map(function(m) return m.lhs end, vim.api.nvim_buf_get_keymap(b, "n"))
+  check("q then :Yadoist gives a working buffer", vim.bo[b].filetype == "yadoist" and vim.bo[b].buftype == "acwrite"
+    and vim.tbl_contains(maps, "gr") and vim.tbl_contains(lines(b), "- [ ] Alpha"),
+    ("filetype=%q buftype=%q maps=%s"):format(vim.bo[b].filetype, vim.bo[b].buftype, vim.inspect(maps)))
+  check("and asks only for what changed", server.log[#server.log].body.sync_token ~= "*")
+
+  server.edit("items", "a", { content = "Alpha, renamed elsewhere" })
+  vim.cmd("edit")
+  settled(b)
+  check(":e fetches again", vim.tbl_contains(lines(b), "- [ ] Alpha, renamed elsewhere"), vim.inspect(lines(b)))
+  vim.api.nvim_buf_set_lines(b, 2, 2, false, { "- [ ] unsaved" })
+  check(":e refuses while there are unsaved edits", not pcall(vim.cmd, "edit"))
+  vim.cmd("edit!")
+  settled(b)
+  check(":e! throws them away and fetches again", not vim.tbl_contains(lines(b), "- [ ] unsaved") and not vim.bo[b].modified,
+    vim.inspect(lines(b)))
+
+  vim.api.nvim_buf_set_lines(b, 2, 2, false, { "- [ ] unsaved" })
+  answer = 2 -- Cancel
+  vim.api.nvim_feedkeys("gr", "x", false)
+  settled(b)
+  check("gr with unsaved edits asks first, and Cancel keeps them", vim.tbl_contains(lines(b), "- [ ] unsaved"))
+  answer = 1 -- Reload
+  vim.api.nvim_feedkeys("gr", "x", false)
+  settled(b)
+  check("and Reload throws them away", not vim.tbl_contains(lines(b), "- [ ] unsaved"), vim.inspect(lines(b)))
+end
+
+print("\nediting while Todoist is busy")
+do
+  -- 2a. A background refresh must not wipe what was typed while it was out.
+  local b = fresh()
+  server.holding = true
+  vim.api.nvim_exec_autocmds("FocusGained", { buffer = b })
+  vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] typed during the fetch" })
+  server.holding = false
+  server.release()
+  settled(b)
+  check("typing during a background refresh survives it", vim.tbl_contains(lines(b), "- [ ] typed during the fetch"))
+  check("and is still unsaved", vim.bo[b].modified)
+
+  -- A refresh in flight when :w comes is waited for rather than refused.
+  b = fresh()
+  server.delay = 30
+  vim.api.nvim_exec_autocmds("FocusGained", { buffer = b })
+  vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] Charlie" })
+  vim.cmd("write")
+  server.delay = 0
+  check(":w during a refresh waits for it, then writes", vim.deep_equal(server.take(), { "item_add" }) and not vim.bo[b].modified,
+    vim.inspect(notes))
+
+  -- 2b. A write that lands is never sent again, however what follows goes.
+  b = fresh()
+  vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] Charlie" })
+  server.failures = { { lost = true } } -- it lands, but the reply is lost
+  vim.cmd("write")
+  check("a write whose reply was lost is resent, and lands once", vim.deep_equal(server.take(), { "item_add" }),
+    vim.inspect(server.log[#server.log]))
+  for _ = 1, 10 do
+    table.insert(server.failures, { transport = true })
+  end
+  vim.cmd("write")
+  vim.cmd("write")
+  check("and a later :w does not create it again", #server.take() == 0 and not vim.bo[b].modified)
+  server.failures = {}
+
+  -- Lost so often that the write gives up: it may have landed or not.
+  b = fresh()
+  vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] Delta" })
+  server.failures = { { lost = true }, { transport = true }, { transport = true } }
+  vim.cmd("write")
+  check("a write that never hears back stays unsaved", vim.bo[b].modified and vim.deep_equal(server.take(), { "item_add" }))
+  vim.cmd("write")
+  local adds = 0
+  for _, item in pairs(server.data.items) do
+    adds = adds + ((item.content == "Delta" and not item.is_deleted) and 1 or 0)
+  end
+  check("and writing it again does not create it twice", adds == 1 and not vim.bo[b].modified, adds)
+
+  -- 2c. Undo must not walk back past the content that was loaded.
+  b = fresh()
+  vim.cmd("silent! normal! uuu")
+  check("undo cannot empty the buffer", vim.tbl_contains(lines(b), "- [ ] Alpha"), vim.inspect(lines(b)))
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 11, { "Alpha!" })
+  vim.cmd("write")
+  vim.cmd("silent! normal! uu")
+  check("nor back past a write", vim.tbl_contains(lines(b), "- [ ] Alpha!") and not vim.bo[b].modified, vim.inspect(lines(b)))
+
+  -- 2d. :wq needs the write to be finished when BufWriteCmd returns.
+  b = fresh()
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 11, { "Alpha!" })
+  server.delay = 50
+  vim.cmd("write")
+  server.delay = 0
+  check("the buffer is saved once :w returns", not vim.bo[b].modified)
+  vim.cmd("split")
+  vim.api.nvim_set_current_buf(b)
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 12, { "Alpha?" })
+  local before = #vim.api.nvim_tabpage_list_wins(0)
+  server.delay = 50
+  vim.cmd("wq")
+  server.delay = 0
+  check(":wq closes the window once the write lands", #vim.api.nvim_tabpage_list_wins(0) == before - 1)
+
+  -- A write Todoist takes too long to answer goes on in the background, and
+  -- the buffer stays read-only until it is answered.
+  b = fresh()
+  local patience = buffer.patience
+  buffer.patience = function() return 30 end
+  server.holding = true
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 11, { "Alpha!" })
+  vim.cmd("write")
+  check("a write still out leaves the buffer read-only", not vim.bo[b].modifiable)
+  server.holding = false
+  server.release()
+  vim.wait(1000, function() return vim.bo[b].modifiable end)
+  check("until Todoist answers", vim.bo[b].modifiable and not vim.bo[b].modified)
+  buffer.patience = patience
+end
+
+print("\nwhen a write partly fails")
+do
+  local b = fresh()
+  server.reject = function(cmd)
+    return cmd.type == "item_add" and cmd.args.content == "Bad" and "Invalid argument value" or nil
+  end
+  vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] Good", "- [ ] Bad" })
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 11, { "Alpha!" })
+  vim.cmd("write")
+  check("the buffer is left as typed", vim.deep_equal({ lines(b)[3], lines(b)[5], lines(b)[6] }, { "- [ ] Alpha!", "- [ ] Good", "- [ ] Bad" })
+    and vim.bo[b].modified, vim.inspect(lines(b)))
+  local diags = vim.diagnostic.get(b)
+  check("with the failure on its line", #diags == 1 and diags[1].lnum == 5 and diags[1].message == "Invalid argument value",
+    vim.inspect(diags))
+  check("and what landed reported", (notes[#notes] or ""):find("1 added, 1 updated, but 1 failed", 1, true) ~= nil, notes[#notes])
+  server.take()
+  server.reject = nil
+  vim.api.nvim_buf_set_text(b, 5, 6, 5, 9, { "Better" })
+  vim.cmd("write")
+  check("the next :w sends only what failed", vim.deep_equal(server.take(), { "item_add" }) and not vim.bo[b].modified,
+    vim.inspect(server.log[#server.log].body.commands))
+  check("and draws what Todoist has", vim.tbl_contains(lines(b), "- [ ] Better") and vim.tbl_contains(lines(b), "- [ ] Good"))
+end
+
+print("\nfailures")
+do
+  local b = fresh()
+  server.failures = { { status = 503 } }
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 11, { "Alpha!" })
+  vim.cmd("write")
+  check("a 503 is tried again, and the write lands", vim.deep_equal(server.take(), { "item_update" }) and not vim.bo[b].modified)
+
+  server.failures = { { status = 400 } }
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 12, { "Alpha?" })
+  local sent = #server.log
+  vim.cmd("write")
+  check("a 400 is not, and the edit stays unsaved", #server.log == sent + 1 and vim.bo[b].modified, #server.log - sent)
+  vim.cmd("write")
+  check("until the next :w", vim.deep_equal(server.take(), { "item_update" }) and not vim.bo[b].modified)
+
+  -- vim.system throws when curl cannot run; that must not leave the buffer
+  -- busy for good, refusing every :w after.
+  local fake_request, system = api.request, vim.system
+  api.request, vim.system = http, function() error("ENOENT: no such file or directory (cmd): 'curl'") end
+  vim.api.nvim_feedkeys("gr", "x", false)
+  vim.wait(500, function() return not buffer._state[b].busy end)
+  api.request, vim.system = fake_request, system
+  check("a fetch that cannot start does not leave the buffer busy", not buffer._state[b].busy)
+  check("and says why", (notes[#notes] or ""):find("could not run curl", 1, true) ~= nil, notes[#notes])
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 12, { "Alpha." })
+  vim.cmd("write")
+  check("so :w works after it", vim.deep_equal(server.take(), { "item_update" }), vim.inspect(notes))
+end
+
+print("\nreporting")
+do
+  local b = fresh()
+  vim.api.nvim_buf_set_text(b, 2, 6, 2, 11, { "Alpha!" }) -- rename Alpha
+  vim.api.nvim_buf_set_lines(b, 3, 4, false, {})          -- delete Bravo
+  answer = 2                                              -- "Skip the deletes, apply the rest"
+  vim.cmd("write")
+  check("'skip the deletes' does not report a delete", not (notes[1] or ""):find("deleted"), notes[1])
+  check("and does not delete", vim.deep_equal(server.take(), { "item_update" }) and vim.tbl_contains(lines(b), "- [ ] Bravo"),
+    vim.inspect(lines(b)))
 end
 
 print(("\n%d passed, %d failed"):format(passed, failed))
