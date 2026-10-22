@@ -57,7 +57,7 @@ function M.due_string(task)
     return format_date(due.date)
   end
   if type(due.string) == "string" and due.string ~= "" then
-    return due.string
+    return M.one_line(due.string)
   end
   if has_date then
     return format_date(due.date)
@@ -98,6 +98,20 @@ function M.is_inbox(project)
   return project.inbox_project == true or project.is_inbox_project == true
 end
 
+--- Text the buffer draws on a single line: a title, a label, a project or
+--- section name. Todoist will store a line break in any of them, which no
+--- buffer line can hold, so each becomes a space, and the ends are trimmed.
+function M.one_line(s)
+  local text = tostring(s or ""):gsub("\r\n?", "\n"):gsub("\n", " ")
+  return vim.trim(text)
+end
+
+--- A task's title as the buffer shows it. Comparing this rather than the raw
+--- title keeps a line break that was drawn as a space from reading as an edit.
+function M.content(task)
+  return M.one_line(task.content)
+end
+
 --- The description as the buffer shows it: Unix line endings, no blank lines
 --- at either end, no trailing whitespace on any line, and whitespace-only
 --- lines left empty. Comparing these rather than the raw strings keeps
@@ -111,7 +125,7 @@ end
 function M.labels(task)
   local out = {}
   for _, l in ipairs(task.labels or {}) do
-    table.insert(out, l)
+    table.insert(out, M.one_line(l))
   end
   return out
 end

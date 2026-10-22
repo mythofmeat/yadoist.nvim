@@ -25,20 +25,119 @@ local function labels_equal(a, b)
   return true
 end
 
+local function kind_of(heading)
+  return heading.level == 1 and "project" or "section"
+end
+
+--- Work out which project or section each heading line stands for.
+---
+--- A heading yadoist drew carries a mark saying which, and that is what keeps
+--- two projects of the same name apart. One that was cut and pasted lost its
+--- mark, but if it reads exactly like a heading that went missing it is that
+--- one. Anything else was typed by hand and is looked up by name later.
+---@return table by_lnum  heading lines by line number, each with .drawn set
+---   to the { kind, id, project_id?, name } it was drawn for, if any
+---@return integer removed  how many drawn headings no longer have a line
+local function resolve_headings(ctx)
+  local by_lnum, claimed = {}, {}
+  for _, h in ipairs(ctx.headings or {}) do
+    by_lnum[h.lnum] = h
+    local drawn = ctx.heading and ctx.heading(h.lnum)
+    if drawn and drawn.kind == kind_of(h) and not claimed[drawn] then
+      h.drawn, claimed[drawn] = drawn, true
+    end
+  end
+
+  local project
+  for _, h in ipairs(ctx.headings or {}) do
+    if h.level == 1 then
+      project = h
+    end
+    if not h.drawn then
+      for _, drawn in ipairs(ctx.heading_ids or {}) do
+        local here = drawn.kind == "project"
+          or (project and project.drawn and project.drawn.id == drawn.project_id)
+        if not claimed[drawn] and drawn.kind == kind_of(h) and drawn.name == h.name and here then
+          h.drawn, claimed[drawn] = drawn, true
+          break
+        end
+      end
+    end
+  end
+
+  local removed = 0
+  for _, drawn in ipairs(ctx.heading_ids or {}) do
+    if not claimed[drawn] then
+      removed = removed + 1
+    end
+  end
+  return by_lnum, removed
+end
+
+--- The one id a name typed by hand stands for, or an error saying why not.
+local function by_name(ids, what, name, where)
+  if not ids or #ids == 0 then
+    return nil, ("no %s named %q%s — yadoist does not create %ss"):format(what, name, where or " in Todoist", what)
+  end
+  if #ids > 1 then
+    return nil, ("%d %ss are called %q, so a heading typed by hand cannot say which — move the task under the heading yadoist drew for it")
+      :format(#ids, what, name)
+  end
+  return ids[1]
+end
+
 --- In project views the headings say where a line lives.
-local function resolve_by_project(ctx, e)
-  e.project_id = ctx.project_ids[e.project]
-  if not e.project_id then
-    return ("no project named %q in Todoist — yadoist does not create projects"):format(e.project)
+local function resolve_by_project(ctx, heads, e)
+  local msg
+  local ph = heads[e.project_lnum]
+  if ph and ph.drawn then
+    e.project_id = ph.drawn.id
+  else
+    e.project_id, msg = by_name(ctx.project_ids[e.project], "project", e.project)
+    if msg then
+      return msg
+    end
   end
   if e.section then
-    local map = (ctx.section_ids or {})[e.project_id] or {}
-    e.section_id = map[e.section]
-    if not e.section_id then
-      return ("no section named %q in %q — yadoist does not create sections"):format(e.section, e.project)
+    local sh = heads[e.section_lnum]
+    if sh and sh.drawn and sh.drawn.project_id == e.project_id then
+      e.section_id = sh.drawn.id
+    else
+      local names = (ctx.section_ids or {})[e.project_id] or {}
+      e.section_id, msg = by_name(names[e.section], "section", e.section, (" in %q"):format(e.project))
+      if msg then
+        return msg
+      end
     end
   end
   return nil
+end
+
+--- A drawn heading whose text was edited renames its project or section,
+--- unless another one there already has the new name: two of a name is
+--- allowed, but it is far more likely to be a mistake, or an attempt to move
+--- tasks, than a wish.
+local function renames(ctx, heads, ops, errors)
+  for _, h in pairs(heads) do
+    local drawn = h.drawn
+    if drawn and h.name ~= drawn.name then
+      local others = drawn.kind == "project" and ctx.project_ids[h.name]
+        or ((ctx.section_ids or {})[drawn.project_id] or {})[h.name]
+      local taken = false
+      for _, id in ipairs(others or {}) do
+        taken = taken or id ~= drawn.id
+      end
+      if taken then
+        table.insert(errors, { lnum = h.lnum, msg = ("there is already a %s called %q — to move tasks there, move their lines under its heading")
+          :format(drawn.kind, h.name) })
+      else
+        table.insert(ops, { kind = "rename", target = drawn.kind, id = drawn.id, name = h.name, content = drawn.name, lnum = h.lnum })
+      end
+    end
+  end
+  table.sort(ops, function(a, b)
+    return a.lnum < b.lnum
+  end)
 end
 
 --- Date views have day headings where project views have project headings, so
@@ -96,18 +195,25 @@ end
 
 --- @param ctx table
 ---   entries      parsed buffer entries
+---   headings     parsed heading lines
 ---   resolve      fun(lnum): task|nil -- the task whose live mark is on that line
+---   heading      fun(lnum): table|nil -- what the heading on that line was
+---                drawn for, from its live mark: { kind, id, project_id?, name }
+---   heading_ids  every { kind, id, project_id?, name } that was drawn
 ---   known        { [task_id] = task } -- everything we rendered
----   project_ids  { [name] = id }
----   section_ids  { [project_id] = { [name] = id } }
+---   project_ids  { [name] = id[] }, every live project by name
+---   section_ids  { [project_id] = { [name] = id[] } }
 ---   label_names  { [name] = true } labels that already exist, or nil to let
 ---                any label through
 ---   by_date      date views only: { headings, placed, overdue, inbox_id },
 ---                the first three from render (see resolve_by_date)
---- @return table[] ops, table[] errors
+--- @return table[] ops, table[] errors, table info
+---   info.headings_removed: how many drawn headings no longer have a line
 function M.compute(ctx)
   local entries, known = ctx.entries, ctx.known or {}
   local ops, errors = {}, {}
+  local heads, removed = resolve_headings(ctx)
+  renames(ctx, heads, ops, errors)
 
   -- 1. Identity from the live extmarks.
   local seen = {}
@@ -144,8 +250,9 @@ function M.compute(ctx)
   --    create.
   local buckets = {}
   for i, task in ipairs(deletes) do
-    buckets[task.content] = buckets[task.content] or {}
-    table.insert(buckets[task.content], i)
+    local content = model.content(task)
+    buckets[content] = buckets[content] or {}
+    table.insert(buckets[content], i)
   end
   local reclaimed = {}
   for _, e in ipairs(creates) do
@@ -181,7 +288,7 @@ function M.compute(ctx)
     if ctx.by_date then
       msg = resolve_by_date(ctx.by_date, e)
     else
-      msg = resolve_by_project(ctx, e)
+      msg = resolve_by_project(ctx, heads, e)
     end
     if msg then
       table.insert(errors, { lnum = e.lnum, msg = msg })
@@ -211,8 +318,12 @@ function M.compute(ctx)
     end
   end
 
+  local info = { headings_removed = removed }
   if #errors > 0 then
-    return {}, errors
+    table.sort(errors, function(a, b)
+      return a.lnum < b.lnum
+    end)
+    return {}, errors, info
   end
 
   -- 5. Creates, in buffer order so parents land before their children.
@@ -240,7 +351,7 @@ function M.compute(ctx)
     if task then
       local fields = {}
 
-      if e.content ~= task.content then
+      if e.content ~= model.content(task) then
         fields.content = e.content
       end
 
@@ -323,7 +434,7 @@ function M.compute(ctx)
     table.insert(ops, { kind = "delete", id = task.id, content = task.content })
   end
 
-  return ops, errors
+  return ops, errors, info
 end
 
 return M

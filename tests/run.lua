@@ -124,6 +124,199 @@ do
     errors and vim.inspect(errors) or (ops and vim.inspect(ops)))
 end
 
+--- An untouched buffer must round-trip exactly: render, parse and diff it, and
+--- nothing at all may come out.
+local function no_ops(name, data, opts)
+  local ok, ops, errors = pcall(function()
+    local buf, st = mount(data, opts)
+    return ops_for(buf, st)
+  end)
+  check(name, ok and ops ~= nil and #ops == 0 and #(errors or {}) == 0,
+    not ok and ops or vim.inspect((errors and #errors > 0) and errors or ops))
+end
+
+local function with(fn)
+  local d = fixture()
+  fn(d)
+  return d
+end
+
+do
+  no_ops("a checklist in a description stays a description",
+    with(function(d) d.tasks[1].description = "Steps:\n- [ ] one\n- [x] two\n  - [X] nested\n\\- [ ] escaped" end))
+  no_ops("a title ending in <...> keeps it", with(function(d) d.tasks[1].content = "Style the <div>"; d.tasks[1].due = nil end))
+  no_ops("a title ending in !p1 keeps it", with(function(d) d.tasks[1].content = "Benchmark !p1"; d.tasks[1].priority = 1 end))
+  no_ops("a title ending in @word keeps it", with(function(d) d.tasks[1].content = "Reply to @john" end))
+  no_ops("a title ending in several of them keeps them all",
+    with(function(d) d.tasks[1].content = "a @b !p2 <c> @{d e}"; d.tasks[1].labels = {}; d.tasks[1].due = nil end))
+  no_ops("a title with a backslash where an escape would go keeps it",
+    with(function(d) d.tasks[1].content = "path \\<div> and \\\\@x" end))
+  no_ops("a label with a space survives", with(function(d) d.tasks[1].labels = { "waiting for" } end))
+  no_ops("a label that looks like a braced one survives", with(function(d) d.tasks[1].labels = { "{x", "x}", "a@b" } end))
+  no_ops("a tab on a later description line survives", with(function(d) d.tasks[1].description = "code:\n\tindented" end))
+  no_ops("a newline in a title renders", with(function(d) d.tasks[1].content = "line one\nline two" end))
+  no_ops("whitespace around a title is not an edit", with(function(d) d.tasks[1].content = "  Buy milk \r\n" end))
+  no_ops("a newline in a project name renders", with(function(d) d.projects[2].name = "House\nChores" end))
+  no_ops("two projects sharing a name keep their own tasks", with(function(d)
+    table.insert(d.projects, { id = "p3", name = "House Chores", child_order = 3 })
+    table.insert(d.tasks, task("t5", "In the other House Chores", { project_id = "p3" }))
+  end))
+  no_ops("two sections sharing a name keep their own tasks", with(function(d)
+    table.insert(d.sections, { id = "s2", project_id = "p2", name = "Kitchen", child_order = 2 })
+    table.insert(d.tasks, task("t6", "In the other Kitchen", { project_id = "p2", section_id = "s2" }))
+  end))
+
+  eq("a title that ends like a suffix is drawn escaped",
+    render.build(with(function(d) d.tasks[1].content = "Style the <div>"; d.tasks[1].due = nil end))[3],
+    "- [ ] Style the \\<div> @errand !p2")
+  eq("a label with a space is drawn in braces",
+    render.build(with(function(d) d.tasks[1].labels = { "waiting for" } end))[3],
+    "- [ ] Buy milk @{waiting for} !p2 <2099-01-01>")
+  eq("a description line that reads as a task is drawn escaped",
+    render.build(with(function(d) d.tasks[1].description = "- [ ] one" end))[4], "  \\- [ ] one")
+
+  local c, l = parse.split_suffixes("Plan @{waiting for} @errand")
+  eq("a braced label is read back", { c, l }, { "Plan", { "waiting for", "errand" } })
+  c, l = parse.split_suffixes("Ask \\@john @errand")
+  eq("an escaped @ stays in the title", { c, l }, { "Ask @john", { "errand" } })
+end
+
+do
+  -- Two projects called House Chores. The headings yadoist drew know which is
+  -- which; one typed by hand cannot.
+  local function twins()
+    return with(function(d)
+      table.insert(d.projects, { id = "p3", name = "House Chores", child_order = 3 })
+      table.insert(d.tasks, task("t5", "In the other House Chores", { project_id = "p3" }))
+    end)
+  end
+  local buf, st = mount(twins())
+  vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "# House Chores", "", "- [ ] Under a third heading" })
+  local ops, errors = ops_for(buf, st)
+  check("a hand-typed heading that two projects share is refused",
+    #ops == 0 and #errors == 1 and errors[1].msg:find("2 projects are called", 1, true) ~= nil, vim.inspect(errors))
+
+  buf, st = mount(twins())
+  vim.api.nvim_set_current_buf(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local second = vim.fn.index(lines, "# House Chores", vim.fn.index(lines, "# House Chores") + 1)
+  vim.api.nvim_win_set_cursor(0, { second + 1, 0 })
+  vim.cmd("normal! ddP") -- cut and paste the heading back where it was
+  ops, errors = ops_for(buf, st)
+  check("a heading cut and pasted back is still the project it was drawn for",
+    #ops == 0 and #errors == 0, vim.inspect(errors) .. vim.inspect(ops))
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_text(buf, 4, 2, 4, 7, { "Home" })
+  ops = ops_for(buf, st)
+  eq("editing a heading renames its project",
+    vim.tbl_map(function(o) return { o.kind, o.target, o.id, o.name } end, ops), { { "rename", "project", "p2", "Home Chores" } })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_text(buf, 9, 3, 9, 10, { "Pantry" })
+  ops = ops_for(buf, st)
+  eq("and a section heading its section",
+    vim.tbl_map(function(o) return { o.kind, o.target, o.id, o.name } end, ops), { { "rename", "section", "s1", "Pantry" } })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_text(buf, 4, 2, 4, 14, { "Inbox" })
+  ops, errors = ops_for(buf, st)
+  check("renaming a project to a name another one has is refused",
+    #ops == 0 and #errors == 1 and errors[1].lnum == 5, vim.inspect(errors))
+
+  eq("renames are sent as project and section updates",
+    vim.tbl_map(function(c) return { c.command.type, c.command.args.id, c.command.args.name } end,
+      sync._commands_for({ { kind = "rename", target = "project", id = "p2", name = "Home" },
+        { kind = "rename", target = "section", id = "s1", name = "Pantry" } })),
+    { { "project_update", "p2", "Home" }, { "section_update", "s1", "Pantry" } })
+end
+
+do
+  -- The property every item above is a case of: whatever Todoist holds, an
+  -- untouched buffer sends nothing. Random titles, descriptions, labels and
+  -- names, built from the pieces most likely to be misread. Set
+  -- YADOIST_FUZZ_ROUNDS and YADOIST_FUZZ_SEED to look harder.
+  local rounds = tonumber(vim.env.YADOIST_FUZZ_ROUNDS) or 300
+  math.randomseed(tonumber(vim.env.YADOIST_FUZZ_SEED) or 20261022)
+  local function pick(list)
+    return list[math.random(#list)]
+  end
+  local words = { "a", "Buy", "milk", "<div>", "<", ">", "<a @b>", "!p1", "!p4", "!p", "@john", "@", "@{x y}", "@{",
+    "}", "{x}", "\\", "\\\\", "\\<x>", "\\@y", "- [ ]", "[x]", "#", "##", "bob@example.com", "\t", "\n", "\r\n", "  " }
+  local function title()
+    local parts = { pick({ "Task", "x", "#", "- [ ]", "<y>", "@z" }) }
+    for _ = 1, math.random(0, 5) do
+      table.insert(parts, pick(words))
+    end
+    return table.concat(parts, pick({ " ", " ", "", "  " }))
+  end
+  local lines = { "Steps:", "- [ ] one", "- [x] two", "  - [X] nested", "\\- [ ] escaped", "\\\\- [ ] twice",
+    "\tTabbed", "\t- [ ] tabbed box", "# not a heading", "plain", "", "   ", "  indented", "trailing  ", "a\r", "@x !p1 <y>" }
+  local function description()
+    local out = {}
+    for _ = 1, math.random(0, 6) do
+      table.insert(out, pick(lines))
+    end
+    return table.concat(out, pick({ "\n", "\r\n" }))
+  end
+  local labels = { "errand", "waiting for", "a@b", "{x", "x}", "p1", "<x>", "!p2", "é", "two  spaces", "back\\slash" }
+  local names = { "Inbox", "Work", "Work", "# Hashed", "## Two", "  padded  ", "multi\nline", "Kitchen", "Kitchen" }
+  local dues = {
+    false, { string = "tomorrow", date = "2099-01-02" }, { string = "x", date = "2099-01-02T15:00:00" },
+    { string = "every day", date = "2099-01-02", is_recurring = true },
+  }
+
+  local failures = {}
+  for round = 1, rounds do
+    local data = { projects = {}, sections = {}, tasks = {}, labels = {} }
+    for i = 1, math.random(1, 4) do
+      table.insert(data.projects, { id = "p" .. i, name = i == 1 and "Inbox" or pick(names), inbox_project = i == 1 or nil,
+        child_order = math.random(1, 3) })
+      if math.random() < 0.5 then
+        table.insert(data.sections, { id = "s" .. i, project_id = "p" .. i, name = pick(names), section_order = math.random(1, 3) })
+      end
+    end
+    for i = 1, math.random(1, 8) do
+      local project = pick(data.projects)
+      local parent = (i > 1 and math.random() < 0.3) and data.tasks[math.random(i - 1)] or nil
+      local section = nil
+      for _, s in ipairs(data.sections) do
+        if s.project_id == project.id and math.random() < 0.5 then
+          section = s.id
+        end
+      end
+      local due = pick(dues)
+      local t = task("t" .. i, title(), {
+        project_id = parent and parent.project_id or project.id,
+        section_id = parent and parent.section_id or section,
+        parent_id = parent and parent.id or nil,
+        child_order = math.random(1, 4),
+        priority = math.random(1, 4),
+        labels = math.random() < 0.5 and { pick(labels), pick(labels) } or {},
+        description = math.random() < 0.6 and description() or nil,
+        due = due and vim.deepcopy(due) or nil,
+      })
+      if t.labels[1] == t.labels[2] then
+        t.labels[2] = nil
+      end
+      if model.content(t) == "" then
+        t.content = "x" .. t.content
+      end
+      table.insert(data.tasks, t)
+    end
+    local ok, ops, errors = pcall(function()
+      local buf, st = mount(data)
+      return ops_for(buf, st)
+    end)
+    if not ok or #ops > 0 or #errors > 0 then
+      table.insert(failures, { round = round, err = not ok and ops or nil, ops = ok and ops or nil, errors = ok and errors or nil,
+        lines = render.build(data) })
+    end
+  end
+  check(rounds .. " random buffers round-trip without sending anything", #failures == 0,
+    failures[1] and vim.inspect(failures[1]))
+end
+
 --------------------------------------------------------------- detecting edits
 print("\ndiff")
 do

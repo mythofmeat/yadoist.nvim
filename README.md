@@ -126,9 +126,11 @@ file your edits under yesterday's days.
 | `- [ ]` / `- [x]` | an open / completed task |
 | two spaces of indent | a subtask of the line above |
 | `@errand` | a label |
+| `@{waiting for}` | a label with a space in its name |
 | `!p1` … `!p4` | priority, matching the names Todoist shows |
 | `<tomorrow>` | a due date |
 | indented text under a task | its description |
+| `\` | before a trailing `<`, `!p1` or `@`: part of the title, not a suffix |
 
 Anything inside `<...>` is handed to Todoist's own natural-language date parser
 untouched, so `<friday at 5pm>`, `<every 2nd tuesday>` and `<in 3 days>` all
@@ -141,6 +143,15 @@ buffer reads the same way.
 
 Labels, priorities and dates are only recognised at the end of a line, so a task
 like `email bob@example.com` keeps its address instead of growing a label.
+
+A title that itself ends in something that looks like one, such as `Style the
+<div>` or `Reply to @john`, is drawn with a backslash in front of it — `Style
+the \<div>` — so it reads back as part of the title. Type it the same way to
+end a title in one. The backslash is not part of the title, and a title that
+really has one there is drawn with one more.
+
+Every untouched buffer reads back exactly as it was drawn, so `:w` with no
+edits never sends anything, whatever the titles, labels and descriptions hold.
 
 ### Descriptions
 
@@ -157,8 +168,11 @@ A task's description is drawn under it, indented one step past the task:
 Edit those lines to change it, add some under any task to give it one, and
 delete them all to clear it. Any indented line that is not a `- [ ]` belongs to
 the task directly above it, and blank lines between its lines are kept as
-paragraph breaks. A line starting with `- [ ]` is always a subtask, so a
-description cannot hold a checklist. Closing a task's fold hides its
+paragraph breaks. Tabs and extra indentation in a description are kept.
+
+A line starting with `- [ ]` is a subtask, so a checklist inside a description
+is drawn with a backslash in front of each box — `\- [ ] one` — and a line you
+type that way stays in the description. Closing a task's fold hides its
 description along with its subtasks.
 
 ### Recurring tasks
@@ -239,12 +253,20 @@ if it still reads exactly like the task that went missing it is that task, moved
 A task whose line is gone and was not pasted back is treated as a deletion — and
 that is what the confirmation prompt is for.
 
+Headings carry the same kind of mark, so a heading knows which project or
+section it was drawn for. Todoist lets two projects, or two sections of one
+project, share a name; their tasks never get mixed up, because neither heading
+is looked up by name. Only a heading you type yourself is, and if two projects
+answer to that name, `:w` says so rather than guess.
+
 ## Things it deliberately does not do
 
 - **Create projects or sections.** A `#` heading that does not match a project
   in Todoist is an error on the line rather than a new project, so a typo can
   never quietly scatter your tasks into somewhere new. Labels get the same
-  treatment unless you set `create_labels = true`.
+  treatment unless you set `create_labels = true`. Editing the text of a
+  heading yadoist drew renames that project or section instead, unless another
+  one there already has the new name.
 - **Work offline.** There is no local copy by design.
 - **Show completed tasks.** Todoist only returns active ones. A task you tick
   stays visible until the next refresh, then disappears.
