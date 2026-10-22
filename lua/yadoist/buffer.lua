@@ -20,7 +20,7 @@ local M = {}
 M.PREFIX = "yadoist://"
 
 local ns_ids = vim.api.nvim_create_namespace("yadoist_ids")
-local ns_hl = vim.api.nvim_create_namespace("yadoist_highlights")
+local ns_beside = vim.api.nvim_create_namespace("yadoist_beside")
 local ns_diag = vim.api.nvim_create_namespace("yadoist_diagnostics")
 
 ---@type table<integer, table>
@@ -170,7 +170,7 @@ function M.render(bufnr)
     cursor = vim.api.nvim_win_get_cursor(win)
   end
 
-  local lines, tasks, highlights, meta = render.build(view_data(st), {
+  local lines, tasks, meta = render.build(view_data(st), {
     projects = config.options.projects,
     view = st.view,
     extra = st.extra,
@@ -178,7 +178,7 @@ function M.render(bufnr)
 
   set_text(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, ns_ids, 0, -1)
-  vim.api.nvim_buf_clear_namespace(bufnr, ns_hl, 0, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, ns_beside, 0, -1)
   vim.diagnostic.reset(ns_diag, bufnr)
 
   st.marks, st.known, st.headings, st.heading_ids, st.owners = {}, {}, {}, meta.heading_ids or {}, {}
@@ -193,17 +193,18 @@ function M.render(bufnr)
     st.owners[mark(bufnr, note.lnum)] = { id = note.task_id, indent = note.indent }
   end
 
-  for _, h in ipairs(highlights) do
-    vim.api.nvim_buf_set_extmark(bufnr, ns_hl, h.lnum - 1, h.from, {
-      end_col = h.to,
-      hl_group = h.group,
-    })
-  end
+  -- Text beside a line, gone with the line if it is deleted.
+  local beside = {}
   for _, a in ipairs(meta.annotations or {}) do
-    vim.api.nvim_buf_set_extmark(bufnr, ns_hl, a.lnum - 1, 0, {
-      virt_text = { { a.text, "YadoistAnnotation" } },
-      virt_text_pos = "eol",
-    })
+    local chunks = beside[a.lnum] or {}
+    beside[a.lnum] = chunks
+    if #chunks > 0 then
+      table.insert(chunks, { "  " })
+    end
+    table.insert(chunks, { a.text, a.group or "YadoistAnnotation" })
+  end
+  for lnum, chunks in pairs(beside) do
+    vim.api.nvim_buf_set_extmark(bufnr, ns_beside, lnum - 1, 0, { virt_text = chunks, virt_text_pos = "eol", invalidate = true })
   end
 
   -- Labels on any task count as existing, not just personal ones: a shared
@@ -777,6 +778,27 @@ function M.quick_add(text)
       M.refresh(bufnr)
     end
   end)
+end
+
+--- The tasks drawn on rows top..bottom (0-based) whose lines are still
+--- there, by row, for colouring them.
+function M.tasks_on(bufnr, top, bottom)
+  local st, out = state[bufnr], {}
+  if not st then
+    return out
+  end
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns_ids, { top, 0 }, { bottom, -1 }, { details = true })) do
+    if st.marks[m[1]] and not (m[4] and m[4].invalid) then
+      out[m[2]] = out[m[2]] or st.marks[m[1]]
+    end
+  end
+  return out
+end
+
+--- The text of a date view's overdue heading, which is coloured as overdue.
+function M.overdue_heading(bufnr)
+  local st = state[bufnr]
+  return st and st.by_date and render.OVERDUE or nil
 end
 
 --- The task buffer to act on: the current one if it is a task buffer, else any

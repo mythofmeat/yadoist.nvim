@@ -11,10 +11,14 @@ local config = require("yadoist.config")
 
 local M = {}
 
-M.RESOURCES = { "items", "projects", "sections", "labels" }
+-- Collaborators and the user are for showing who a task is assigned to.
+M.RESOURCES = { "items", "projects", "sections", "labels", "collaborators", "user" }
 
--- Each Sync resource, and the name the rest of yadoist knows it by.
-local KINDS = { items = "tasks", projects = "projects", sections = "sections", labels = "labels" }
+-- Each Sync resource that is a list, and the name the rest of yadoist knows
+-- it by.
+local KINDS = {
+  items = "tasks", projects = "projects", sections = "sections", labels = "labels", collaborators = "collaborators",
+}
 
 local cache
 
@@ -56,6 +60,9 @@ local function merge(res, seq)
       end
     end
   end
+  if type(res.user) == "table" then
+    cache.user = res.user
+  end
   if type(res.sync_token) == "string" then
     cache.token = res.sync_token
   end
@@ -96,6 +103,7 @@ function M.snapshot()
     end)
     out[kind] = list
   end
+  out.user = cache.user
   return out
 end
 

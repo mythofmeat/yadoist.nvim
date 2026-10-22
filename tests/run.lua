@@ -17,6 +17,12 @@ dapi.request = function(method, path)
   error(("a test reached the network: %s %s"):format(method, path))
 end
 
+-- Straight to stdout: print() goes through Neovim's message area, which
+-- after a redraw or keys fed in can run one line into the next.
+local function print(text)
+  io.stdout:write(tostring(text), "\n")
+end
+
 local passed, failed = 0, 0
 
 local function check(name, ok, detail)
@@ -543,7 +549,7 @@ do
       "- [ ] Chore child <" .. today .. ">",
     })
 
-  local _, _, _, meta = render.build(dated(), { view = "today" })
+  local _, _, meta = render.build(dated(), { view = "today" })
   local notes = {}
   for _, a in ipairs(meta.annotations) do
     notes[a.lnum] = a.text
@@ -904,7 +910,7 @@ do
     { id = "b1", name = "B1", parent_id = "b", child_order = 1 },
     { id = "b1x", name = "B1x", parent_id = "b1", child_order = 1 },
   } }
-  local lines, _, _, meta = render.build(tree)
+  local lines, _, meta = render.build(tree)
   eq("projects are drawn in sidebar (depth-first) order",
     vim.tbl_filter(function(l) return l:match("^# ") end, lines), { "# Inbox", "# A", "# A1", "# A2", "# B", "# B1", "# B1x" })
   local notes = {}
@@ -1183,6 +1189,50 @@ do
   eq("unticking one reopens it", vim.tbl_map(function(o) return { o.kind, o.id } end, ops), { { "reopen", "c1" } })
 end
 
+print("\ncolour, and the text beside a line")
+do
+  local hl = require("yadoist.highlight")
+  local ctx = { today = "2026-10-22" }
+  local function named(line, t, c)
+    return vim.tbl_map(function(g) return { g[1], line:sub(g[2] + 1, g[3]) } end, hl.groups(line, t, c or ctx))
+  end
+  eq("a typed task line is coloured part by part", named("- [ ] New @x !p1 <2000-01-01>"), {
+    { "YadoistCheckboxOpen", "- [ ]" }, { "YadoistContent", "New" }, { "YadoistDueOverdue", "<2000-01-01>" },
+    { "YadoistPriority1", "!p1" }, { "YadoistLabel", "@x" },
+  })
+  eq("an escaped token is part of the title", named("- [ ] Style the \\<div>")[2], { "YadoistContent", "Style the \\<div>" })
+  eq("a ticked one is struck through", named("    - [x] Done")[2], { "YadoistContentDone", "Done" })
+  eq("a date due today", named("- [ ] T <2026-10-22 09:00>")[3], { "YadoistDueToday", "<2026-10-22 09:00>" })
+  eq("words in a date are just a date", named("- [ ] T <friday>")[3], { "YadoistDue", "<friday>" })
+  local water = task("r", "Water", { due = { string = "every day", date = "2026-10-01", is_recurring = true } })
+  eq("a recurring date is coloured from its task while the line shows it",
+    named("- [ ] Water <every day>", water)[3], { "YadoistDueOverdue", "<every day>" })
+  eq("but not once it is edited", named("- [ ] Water <every week>", water)[3], { "YadoistDue", "<every week>" })
+  eq("headings and descriptions", { named("# Inbox")[1], named("## Kitchen")[1], named("  notes")[1] },
+    { { "YadoistProject", "# Inbox" }, { "YadoistSection", "## Kitchen" }, { "YadoistDescription", "notes" } })
+  eq("a date view's overdue heading", named("# Overdue", nil, { today = ctx.today, overdue = "Overdue" })[1],
+    { "YadoistDueOverdue", "# Overdue" })
+
+  local data = fixture()
+  data.collaborators = { { id = "u2", full_name = "Alice Example" } }
+  data.user = { id = "u1", full_name = "Me" }
+  data.tasks[1].deadline = { date = "2099-02-01" }
+  data.tasks[1].responsible_uid = "u2"
+  data.tasks[2].responsible_uid = "u1"
+  data.tasks[4].deadline = { date = "2000-01-01" }
+  local lines, _, meta = render.build(data)
+  local beside = {}
+  for _, a in ipairs(meta.annotations) do
+    beside[lines[a.lnum]] = beside[lines[a.lnum]] or {}
+    table.insert(beside[lines[a.lnum]], { a.text, a.group })
+  end
+  eq("a deadline and an assignee are shown beside the line", beside["- [ ] Buy milk @errand !p2 <2099-01-01>"],
+    { { "deadline 2099-02-01", "YadoistDeadline" }, { "→ Alice Example", "YadoistAssignee" } })
+  eq("a task assigned to you says so", beside["- [ ] Fix the leaky sink @house"], { { "→ you", "YadoistAssignee" } })
+  eq("a deadline gone by is coloured as overdue", beside["- [ ] Wipe the counters"], { { "deadline 2000-01-01", "YadoistDueOverdue" } })
+  no_ops("and none of it is read back", data)
+end
+
 --------------------------------------------------------------------- priority
 print("\npriority mapping")
 do
@@ -1290,7 +1340,7 @@ do
   check("and which op it was is known", result and result.failed[ops[50]] == "Invalid argument value")
   eq("each request reads back what changed, from the last token",
     { bodies[1].sync_token, bodies[3].sync_token, bodies[3].resource_types },
-    { "*", "t2", { "items", "projects", "sections", "labels" } })
+    { "*", "t2", { "items", "projects", "sections", "labels", "collaborators", "user" } })
 end
 
 print("\nretries")

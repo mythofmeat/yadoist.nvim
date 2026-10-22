@@ -54,7 +54,7 @@ local function fresh(view, data)
       vim.api.nvim_buf_delete(b, { force = true })
     end
   end
-  vim.cmd("only")
+  vim.cmd("silent! only")
   store.reset()
   server = fake.install(api, data or seed())
   answer = 2
@@ -67,6 +67,12 @@ end
 
 local function lines(b)
   return vim.api.nvim_buf_get_lines(b, 0, -1, false)
+end
+
+-- Straight to stdout: print() goes through Neovim's message area, which
+-- after a redraw or keys fed in can run one line into the next.
+local function print(text)
+  io.stdout:write(tostring(text), "\n")
 end
 
 local passed, failed = 0, 0
@@ -122,7 +128,7 @@ do
     vim.api.nvim_set_current_buf(hidden)
     return vim.wo.foldmethod == "expr"
   end)(), "foldmethod=" .. vim.wo.foldmethod)
-  vim.cmd("only")
+  vim.cmd("silent! only")
 end
 
 print("\nopening")
@@ -379,6 +385,67 @@ do
   check(":Yadoist add adds a task through quick add", vim.deep_equal(server.take(), { "quick_add" })
     and (notes[1] or ""):find('added "Buy bread" to Inbox', 1, true) ~= nil, vim.inspect(notes))
   check("and open task buffers catch up", vim.tbl_contains(lines(b), "- [ ] Buy bread"), vim.inspect(lines(b)))
+end
+
+print("\ncompletion, colour and the text beside a line")
+do
+  local data = seed()
+  data.tasks[1].labels = { "errand" }
+  data.tasks[2].deadline = { date = "2099-02-01" }
+  data.labels = { { id = "l1", name = "waiting for" } }
+  data.sections = { { id = "s1", project_id = "p2", name = "Meetings", section_order = 1 } }
+  local b = fresh("all", data)
+  local complete = require("yadoist.complete")
+  -- Completion happens in Insert mode, with the cursor after what was typed;
+  -- this lets the cursor sit there in Normal mode too.
+  vim.o.virtualedit = "onemore"
+  local function at_end(text)
+    vim.api.nvim_buf_set_lines(b, -1, -1, false, { text })
+    vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(b), #text })
+    local start = complete.omnifunc(1, "")
+    if start < 0 then
+      return start, {}
+    end
+    return start, vim.tbl_map(function(i) return i.word end, complete.omnifunc(0, text:sub(start + 1)))
+  end
+  local start, words = at_end("## M") -- the last heading is # Work
+  check("section names complete under their project's heading", start == 3 and vim.deep_equal(words, { "Meetings" }),
+    vim.inspect({ start, words }))
+  start, words = at_end("- [ ] Ask @wa")
+  check("labels complete after @, braced when they need to be", start == 10 and vim.deep_equal(words, { "@{waiting for}" }),
+    vim.inspect({ start, words }))
+  _, words = at_end("- [ ] Ask @")
+  check("every label is offered after a bare @", vim.deep_equal(words, { "@errand", "@{waiting for}" }), vim.inspect(words))
+  start, words = at_end("# Wo")
+  check("project names complete in a heading", start == 2 and vim.deep_equal(words, { "Work" }), vim.inspect({ start, words }))
+  start = at_end("- [ ] nothing to complete")
+  check("and elsewhere nothing is offered", start == -3, start)
+  check("it is the buffer's omnifunc", vim.bo[b].omnifunc == "v:lua.require'yadoist.complete'.omnifunc")
+  vim.o.virtualedit = ""
+
+  -- Colour comes from the text as it is drawn, so a typed line is coloured
+  -- like one yadoist drew: its label like Alpha's.
+  b = fresh("all", data)
+  vim.api.nvim_set_hl(0, "YadoistLabel", { fg = "#00ff00" })
+  vim.api.nvim_set_hl(0, "YadoistDueOverdue", { fg = "#ff0000" })
+  vim.api.nvim_set_hl(0, "YadoistContent", { fg = "#0000ff" })
+  vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] Typed @errand <2000-01-01>" })
+  vim.cmd("redraw!")
+  local function attr(lnum, text)
+    return vim.fn.screenattr(lnum, (vim.fn.getline(lnum):find(text, 1, true)))
+  end
+  local drawn, typed = attr(3, "@errand"), attr(5, "@errand")
+  check("a typed line's label is coloured like a drawn one's", typed ~= 0 and typed == drawn, ("%d vs %d"):format(typed, drawn))
+  local date, title = attr(5, "<2000"), attr(5, "Typed")
+  check("and its date and title in their own colours", date ~= 0 and title ~= 0 and date ~= typed and title ~= date,
+    vim.inspect({ date, title, typed }))
+
+  local marks = vim.api.nvim_buf_get_extmarks(b, vim.api.nvim_get_namespaces().yadoist_beside, 0, -1, { details = true })
+  local texts = {}
+  for _, m in ipairs(marks) do
+    texts[m[2] + 1] = table.concat(vim.tbl_map(function(c) return c[1] end, m[4].virt_text or {}))
+  end
+  check("a deadline is shown beside its line", texts[4] == "deadline 2099-02-01", vim.inspect(texts))
 end
 
 print("\nreporting")
