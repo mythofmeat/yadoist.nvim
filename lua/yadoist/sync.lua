@@ -4,9 +4,11 @@
 -- time), so a big edit is one round trip rather than dozens. A new task gets a
 -- temp_id that its subtasks can name as their parent inside the same request.
 -- Each command carries a uuid, and Todoist applies a uuid at most once, which
--- is what makes it safe to resend a request whose reply never arrived.
-local api = require("yadoist.api")
+-- is what makes it safe to resend a request whose reply never arrived. Each
+-- request also reads back what changed (see store.lua), so a write brings its
+-- own refresh.
 local config = require("yadoist.config")
+local store = require("yadoist.store")
 
 local M = {}
 
@@ -52,9 +54,22 @@ local function uuid()
   return vim.fn.sha256(tostring(math.random()) .. tostring(vim.uv.hrtime())):sub(1, 32)
 end
 
+-- Commands sent without a definite answer coming back — no reply at all, or
+-- a server error — may or may not have been applied. Each keeps its uuid, by
+-- what it says, so sending the same command again on a later :w reuses it, and
+-- Todoist applies it at most once even then.
+local unsure = {}
+
+local function signature(command)
+  return vim.inspect({ command.type, command.temp_id, command.args })
+end
+
+--- The temp_id a task created from line `lnum` is known by until Todoist
+--- gives it a real one.
 local function temp_id(lnum)
   return "yadoist-line-" .. lnum
 end
+M.temp_id = temp_id
 
 --- The diff speaks in REST-style field names; the Sync API wants a `due`
 --- object instead, and null to clear it. A fixed-timezone time is sent in UTC
@@ -74,7 +89,10 @@ end
 local function commands_for(ops)
   local out = {}
   local function add(op, type, args, tmp)
-    table.insert(out, { op = op, command = { type = type, uuid = uuid(), temp_id = tmp, args = args } })
+    local command = { type = type, temp_id = tmp, args = args }
+    local sig = signature(command)
+    command.uuid = unsure[sig] or uuid()
+    table.insert(out, { op = op, command = command, signature = sig })
   end
 
   for _, op in ipairs(ops) do
@@ -119,17 +137,6 @@ local function commands_for(ops)
   return out
 end
 
---- Send one batch, resending it once if the request itself failed. The uuids
---- make the resend harmless if the first attempt did in fact land.
-local function send(commands, cb)
-  api.sync(commands, function(res, err)
-    if not err then
-      return cb(res)
-    end
-    api.sync(commands, cb)
-  end)
-end
-
 local function describe_error(status)
   if type(status) == "table" then
     return tostring(status.error or status.error_tag or vim.inspect(status))
@@ -137,15 +144,18 @@ local function describe_error(status)
   return tostring(status)
 end
 
+--- Send ops to Todoist.
 ---@param ops table[]
 ---@param done fun(result: table|nil, err: string|nil)
+---  result.ops     the ops that were sent, which "skip the deletes" makes
+---                 fewer than were asked for
+---  result.failed  { [op] = why } for each one that did not land
+---  result.errors  the same, as messages
+---  result.ids     { [temp_id] = id } for each task created
 function M.apply(ops, done)
   ops = confirm_deletes(ops)
   if not ops then
     return done(nil, "write cancelled")
-  end
-  if #ops == 0 then
-    return done({ applied = 0, errors = {} })
   end
 
   local pending = commands_for(ops)
@@ -153,7 +163,7 @@ function M.apply(ops, done)
 
   local function fail(op, msg)
     if not failed[op] then
-      failed[op] = true
+      failed[op] = msg
       table.insert(errors, ("%s %q: %s"):format(op.kind, tostring(op.content), msg))
     end
   end
@@ -165,7 +175,7 @@ function M.apply(ops, done)
         applied = applied + 1
       end
     end
-    done({ applied = applied, errors = errors })
+    done({ applied = applied, errors = errors, failed = failed, ids = ids, ops = ops })
   end
 
   local index = 1
@@ -189,7 +199,12 @@ function M.apply(ops, done)
     end
     index = index + #batch
 
-    send(commands, function(res, err)
+    store.sync(commands, function(res, err, info)
+      local status = info and info.status
+      local answered = not err or (status and status < 500)
+      for _, item in ipairs(batch) do
+        unsure[item.signature] = (not answered) and item.command.uuid or nil
+      end
       if err then
         for _, item in ipairs(batch) do
           fail(item.op, err)
@@ -199,9 +214,9 @@ function M.apply(ops, done)
       for tmp, id in pairs(type(res.temp_id_mapping) == "table" and res.temp_id_mapping or {}) do
         ids[tmp] = id
       end
-      local status = type(res.sync_status) == "table" and res.sync_status or {}
+      local reported = type(res.sync_status) == "table" and res.sync_status or {}
       for _, item in ipairs(batch) do
-        local s = status[item.command.uuid]
+        local s = reported[item.command.uuid]
         if s ~= "ok" then
           fail(item.op, s == nil and "Todoist did not report on it" or describe_error(s))
         end

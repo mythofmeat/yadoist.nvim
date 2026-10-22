@@ -28,7 +28,7 @@ are no conflicts to resolve — the trade is that it needs a network connection.
 With lazy.nvim:
 
 ```lua
-{ "you/yadoist.nvim", cmd = "Yadoist", opts = {} }
+{ "you/yadoist.nvim", cmd = { "Yadoist", "YadoistRefresh" }, opts = {} }
 ```
 
 Then create an API token at Todoist → Settings → Integrations → Developer, and
@@ -202,13 +202,34 @@ Todoist stops returning it.
 | key | does |
 |---|---|
 | `<CR>` | tick or untick the task under the cursor |
-| `R` | re-fetch from Todoist |
+| `gr` | re-fetch from Todoist, asking first if there are unsaved edits |
 | `q` | close the buffer |
 
+`:e` re-fetches too, and refuses while there are unsaved edits; `:e!` throws
+them away and re-fetches. Undo stops at the last time the buffer was drawn,
+the way it does after `:e`, so it never walks back into an older list.
+
+## Writing
+
 Nothing is sent until you `:w`, and then everything goes in one request
-through Todoist's Sync API. Each change carries its own id that Todoist applies
-at most once, so if the connection drops before the reply arrives, yadoist
-resends the request without anything happening twice.
+through Todoist's Sync API. The same request reads back whatever has changed,
+so the buffer is redrawn from Todoist's answer to the write itself. `:w` waits
+for that answer, which is what lets `:wq`, `:x` and `ZZ` quit; the buffer is
+read-only meanwhile, and if Todoist is slow to answer, `:w` hands the write over
+to the background and the buffer stays read-only until it lands.
+
+Each change carries its own id that Todoist applies at most once. A request
+that gets no answer, or a server error, is retried a couple of times with a
+pause between; one that got no answer even then keeps its ids, so writing it
+again later still cannot apply anything twice. A rate limit is waited out when
+it asks for a short wait; anything else Todoist refuses is not retried.
+
+If part of a write fails — an unparseable date, say — the buffer is left as you
+typed it, with the reason on the line that failed, and the parts that landed
+are not sent again on the next `:w`.
+
+Refreshing, whether on focus or with `gr`, never redraws over unsaved edits,
+including ones typed while the fetch was on its way.
 
 ## Configuration
 
@@ -231,12 +252,14 @@ require("yadoist").setup({
   projects = nil,
 
   -- Re-fetch when the buffer regains focus, so a shared list does not sit
-  -- stale on screen after someone else changes something.
+  -- stale on screen after someone else changes something. After the first
+  -- fetch, each one asks only for what changed, so this is cheap.
   refresh_on_focus = true,
 
+  -- Per-request timeout, in milliseconds.
   timeout = 15000,
 
-  keymaps = { toggle = "<CR>", refresh = "R", close = "q" },
+  keymaps = { toggle = "<CR>", refresh = "gr", close = "q" },
 })
 ```
 
@@ -294,5 +317,6 @@ nvim --headless -u NONE -i NONE -l tests/lifecycle.lua
 `run.lua` covers the parser, the renderer, the render-parse round trip (with a
 randomised test of it), every operation the diff can produce, including
 identity surviving real `cc`, `dd` and `ddp` keystrokes, and due dates in
-several time zones. `lifecycle.lua` covers the buffer as you meet it: windows
-and folding.
+several time zones. `lifecycle.lua` drives real buffers against a fake Todoist
+(`tests/fake_todoist.lua`): opening, `:e`, undo, writing and `:wq`, edits made
+while a request is out, retries, lost replies, partial failures, and folding.

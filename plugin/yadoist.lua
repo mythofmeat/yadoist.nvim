@@ -33,3 +33,14 @@ end, {
 vim.api.nvim_create_user_command("YadoistRefresh", function()
   require("yadoist").refresh()
 end, { desc = "Re-fetch tasks from Todoist" })
+
+-- A task buffer is loaded from its name, so :e, :e! and restored sessions
+-- fetch it from Todoist rather than reading a file that does not exist.
+vim.api.nvim_create_autocmd("BufReadCmd", {
+  group = vim.api.nvim_create_augroup("Yadoist", { clear = true }),
+  pattern = "yadoist://*",
+  desc = "Load a yadoist task buffer from Todoist",
+  callback = function(ev)
+    require("yadoist.buffer").load(ev.buf)
+  end,
+})

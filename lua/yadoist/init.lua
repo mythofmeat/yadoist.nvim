@@ -19,14 +19,15 @@ function M.views()
   return require("yadoist.views").names()
 end
 
---- Re-fetch from Todoist, discarding nothing unless the buffer is unmodified.
+--- Re-fetch from Todoist and redraw. If the buffer has unsaved edits, asks
+--- before throwing them away.
 function M.refresh()
   local buffer = require("yadoist.buffer")
   local bufnr = buffer.current()
   if not bufnr then
     return vim.notify("yadoist: no task buffer open", vim.log.levels.WARN)
   end
-  buffer.refresh(bufnr, { force = true, announce = true })
+  buffer.reload(bufnr)
 end
 
 return M
