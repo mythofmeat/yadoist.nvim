@@ -113,6 +113,9 @@ local function on_line(_, win, bufnr, row)
   end
 end
 
+-- Exposed for the tests.
+M._on_win, M._on_line = on_win, on_line
+
 function M.setup()
   M.apply()
   vim.api.nvim_create_autocmd("ColorScheme", {

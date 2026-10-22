@@ -445,15 +445,41 @@ do
   vim.api.nvim_set_hl(0, "YadoistDueOverdue", { fg = "#ff0000" })
   vim.api.nvim_set_hl(0, "YadoistContent", { fg = "#0000ff" })
   vim.api.nvim_buf_set_lines(b, 4, 4, false, { "- [ ] Typed @errand <2000-01-01>" })
+
+  -- What the decoration provider sets, line by line, captured as it sets it.
+  local hl, set = require("yadoist.highlight"), {}
+  local real_set = vim.api.nvim_buf_set_extmark
+  vim.api.nvim_buf_set_extmark = function(buf, ns, row, col, opts)
+    if opts and opts.ephemeral then
+      set[row] = set[row] or {}
+      set[row][vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]:sub(col + 1, opts.end_col)] = opts.hl_group
+      return 0
+    end
+    return real_set(buf, ns, row, col, opts)
+  end
+  local win = vim.api.nvim_get_current_win()
+  hl._on_win(nil, win, b, 0, vim.api.nvim_buf_line_count(b) - 1)
+  hl._on_line(nil, win, b, 2)
+  hl._on_line(nil, win, b, 4)
+  vim.api.nvim_buf_set_extmark = real_set
+  check("a typed line is coloured from its text, like a drawn one",
+    set[4] and set[4]["@errand"] == "YadoistLabel" and set[2] and set[2]["@errand"] == "YadoistLabel"
+      and set[4]["<2000-01-01>"] == "YadoistDueOverdue" and set[4]["Typed"] == "YadoistContent", vim.inspect(set))
+
+  -- And on screen, where this Neovim keeps a screen to look at headless.
   vim.cmd("redraw!")
   local function attr(lnum, text)
     return vim.fn.screenattr(lnum, (vim.fn.getline(lnum):find(text, 1, true)))
   end
-  local drawn, typed = attr(3, "@errand"), attr(5, "@errand")
-  check("a typed line's label is coloured like a drawn one's", typed ~= 0 and typed == drawn, ("%d vs %d"):format(typed, drawn))
-  local date, title = attr(5, "<2000"), attr(5, "Typed")
-  check("and its date and title in their own colours", date ~= 0 and title ~= 0 and date ~= typed and title ~= date,
-    vim.inspect({ date, title, typed }))
+  if vim.fn.screenattr(1, 1) < 0 then
+    print("  skip on screen: this Neovim keeps no screen when headless")
+  else
+    local drawn, typed = attr(3, "@errand"), attr(5, "@errand")
+    check("on screen, a typed line's label looks like a drawn one's", typed > 0 and typed == drawn, ("%d vs %d"):format(typed, drawn))
+    local date, title = attr(5, "<2000"), attr(5, "Typed")
+    check("and its date and title in their own colours", date > 0 and title > 0 and date ~= typed and title ~= date,
+      vim.inspect({ date, title, typed }))
+  end
 
   local marks = vim.api.nvim_buf_get_extmarks(b, vim.api.nvim_get_namespaces().yadoist_beside, 0, -1, { details = true })
   local texts = {}
@@ -465,13 +491,20 @@ end
 
 print("\nhealth")
 do
-  vim.cmd("silent checkhealth yadoist")
-  local report = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
-  check(":checkhealth yadoist checks Neovim, curl and the token",
-    report:find("OK Neovim", 1, true) ~= nil and report:find("curl", 1, true) ~= nil
-      and report:find("OK a Todoist API token is set", 1, true) ~= nil, report)
+  -- What it reports, caught as it reports it: how :checkhealth shows its
+  -- report differs between Neovim versions.
+  local said, health = {}, vim.health
+  local function note(kind)
+    return function(msg) table.insert(said, kind .. " " .. msg) end
+  end
+  vim.health = { start = note("START"), ok = note("OK"), info = note("INFO"), warn = note("WARN"), error = note("ERROR") }
+  local ok, err = pcall(require("yadoist.health").check)
+  vim.health = health
+  local report = table.concat(said, "\n")
+  check(":checkhealth yadoist checks Neovim, curl and the token", ok
+    and report:find("OK Neovim", 1, true) ~= nil and report:find("curl", 1, true) ~= nil
+    and report:find("OK a Todoist API token is set", 1, true) ~= nil, ok and report or err)
   check("and never shows the token", not report:find("test-token", 1, true), report)
-  vim.cmd("silent! bwipeout!")
 end
 
 print("\nreporting")
