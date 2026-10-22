@@ -1,8 +1,10 @@
 -- Task data -> buffer text. The inverse of parse.lua.
 --
--- Highlight spans are produced here rather than by a syntax file, so they can
--- be driven by the data: an overdue date is coloured differently from a future
--- one because we know the date, not because of how it is spelled.
+-- Colour is not decided here: highlight.lua colours each line from its text as
+-- it is drawn, typed or edited, and from the task data where the line still
+-- says what was fetched. What is decided here is the text beside a line —
+-- where a task lives in the date views, its deadline, who it is assigned to —
+-- which is virtual text, so it is never read back.
 local model = require("yadoist.model")
 local parse = require("yadoist.parse")
 local views = require("yadoist.views")
@@ -11,57 +13,25 @@ local M = {}
 
 local today = model.today
 
---- Render one task, returning the line and its highlight spans as
---- { group, start_col, end_col } byte offsets.
+--- Render one task's line.
 function M.task_line(task, depth)
-  local done = model.is_completed(task)
-  local spans = {}
-  local line = string.rep("  ", depth)
-
-  local at = #line
-  line = line .. "- [" .. (done and "x" or " ") .. "] "
-  table.insert(spans, { done and "YadoistCheckboxDone" or "YadoistCheckboxOpen", at, #line })
-
-  -- Escaped, so a title that ends like a suffix ("Style the <div>") is not
-  -- read back as one.
-  at = #line
-  line = line .. parse.escape(model.content(task))
-  table.insert(spans, { done and "YadoistContentDone" or "YadoistContent", at, #line })
-
+  local parts = {
+    -- Escaped, so a title that ends like a suffix ("Style the <div>") is not
+    -- read back as one.
+    string.rep("  ", depth) .. "- [" .. (model.is_completed(task) and "x" or " ") .. "] " .. parse.escape(model.content(task)),
+  }
   for _, label in ipairs(model.labels(task)) do
-    line = line .. " "
-    at = #line
-    line = line .. parse.label_token(label)
-    table.insert(spans, { "YadoistLabel", at, #line })
+    table.insert(parts, parse.label_token(label))
   end
-
   local priority = model.api_to_ui_priority(task.priority)
   if priority < 4 then
-    line = line .. " "
-    at = #line
-    line = line .. "!p" .. priority
-    table.insert(spans, { "YadoistPriority" .. priority, at, #line })
+    table.insert(parts, "!p" .. priority)
   end
-
   local due = model.due_string(task)
   if due then
-    line = line .. " "
-    at = #line
-    line = line .. "<" .. due .. ">"
-    local group = "YadoistDue"
-    local date = model.due_date(task)
-    if date then
-      local now = today()
-      if date < now then
-        group = "YadoistDueOverdue"
-      elseif date == now then
-        group = "YadoistDueToday"
-      end
-    end
-    table.insert(spans, { group, at, #line })
+    table.insert(parts, "<" .. due .. ">")
   end
-
-  return line, spans
+  return table.concat(parts, " ")
 end
 
 --- The lines drawn under a task for its description, indented one level past
@@ -75,6 +45,34 @@ function M.description_lines(task, depth)
   local indent, out = string.rep("  ", depth + 1), {}
   for _, line in ipairs(vim.split(d, "\n", { plain = true })) do
     table.insert(out, line:match("^%s*$") and "" or (indent .. parse.escape_description(line)))
+  end
+  return out
+end
+
+--- Who tasks can be assigned to, by id, and which of them is you.
+local function people_of(data)
+  local people = {}
+  for _, person in ipairs(data.collaborators or {}) do
+    people[tostring(person.id)] = model.one_line(person.full_name or person.name or person.email or "")
+  end
+  if type(data.user) == "table" and data.user.id ~= nil then
+    people[tostring(data.user.id)] = "you"
+  end
+  return people
+end
+
+--- What is shown beside a task line, as { text, group } pieces: its deadline,
+--- and who it is assigned to.
+local function beside(task, people)
+  local out = {}
+  local deadline = type(task.deadline) == "table" and task.deadline.date or nil
+  if type(deadline) == "string" and deadline ~= "" then
+    local day = deadline:sub(1, 10)
+    table.insert(out, { "deadline " .. day, day < today() and "YadoistDueOverdue" or "YadoistDeadline" })
+  end
+  local who = task.responsible_uid
+  if who ~= nil and who ~= vim.NIL and people[tostring(who)] then
+    table.insert(out, { "→ " .. people[tostring(who)], "YadoistAssignee" })
   end
   return out
 end
@@ -108,6 +106,7 @@ M.OVERDUE = "Overdue"
 --- is nested under its parent only when both land under the same heading.
 local function build_by_date(data, view, present, project_names)
   local now = today()
+  local people = people_of(data)
   local by_id = {}
   for _, task in ipairs(data.tasks or {}) do
     by_id[task.id] = task
@@ -144,7 +143,7 @@ local function build_by_date(data, view, present, project_names)
     end
   end
 
-  local lines, tasks, highlights = {}, {}, {}
+  local lines, tasks = {}, {}
   local meta = { headings = {}, placed = {}, annotations = {}, notes = {} }
 
   local function push(text)
@@ -153,27 +152,23 @@ local function build_by_date(data, view, present, project_names)
   end
 
   local function emit(task, depth, key)
-    local text, spans = M.task_line(task, depth)
-    local lnum = push(text)
+    local lnum = push(M.task_line(task, depth))
     table.insert(tasks, { lnum = lnum, task = task })
     meta.placed[task.id] = key
-    for _, span in ipairs(spans) do
-      table.insert(highlights, { lnum = lnum, group = span[1], from = span[2], to = span[3] })
-    end
     for _, line in ipairs(M.description_lines(task, depth)) do
-      local dlnum = push(line)
-      table.insert(meta.notes, { lnum = dlnum, task_id = task.id, indent = (depth + 1) * 2 })
-      table.insert(highlights, { lnum = dlnum, group = "YadoistDescription", from = 0, to = #line })
+      table.insert(meta.notes, { lnum = push(line), task_id = task.id, indent = (depth + 1) * 2 })
+    end
+    for _, piece in ipairs(beside(task, people)) do
+      table.insert(meta.annotations, { lnum = lnum, text = piece[1], group = piece[2] })
     end
     if depth == 0 then
-      -- Where the task lives, since the headings no longer say. Virtual text,
-      -- so it is never read back as part of the task.
+      -- Where the task lives, since the headings no longer say.
       local where = model.one_line(project_names[task.project_id] or "?")
       local parent = task.parent_id and by_id[task.parent_id] or nil
       if parent then
         where = where .. " › " .. model.content(parent)
       end
-      table.insert(meta.annotations, { lnum = lnum, text = where })
+      table.insert(meta.annotations, { lnum = lnum, text = where, group = "YadoistAnnotation" })
     end
     local kids = children[task.id]
     if kids then
@@ -188,14 +183,8 @@ local function build_by_date(data, view, present, project_names)
     if #lines > 0 then
       push("")
     end
-    local lnum = push("# " .. text)
+    push("# " .. text)
     meta.headings[text] = key
-    table.insert(highlights, {
-      lnum = lnum,
-      group = key == M.OVERDUE and "YadoistDueOverdue" or "YadoistProject",
-      from = 0,
-      to = #lines[lnum],
-    })
     push("")
     local list = roots[key] or {}
     table.sort(list, by_day)
@@ -215,17 +204,17 @@ local function build_by_date(data, view, present, project_names)
   while #lines > 0 and lines[#lines] == "" do
     table.remove(lines)
   end
-  return lines, tasks, highlights, meta
+  return lines, tasks, meta
 end
 
 --- Build the whole buffer.
----@param data table { projects, sections, tasks }
+---@param data table { projects, sections, tasks, collaborators?, user? }
 ---@param opts table|nil { projects = string[], view = string, extra = table }
 ---   extra: what the view fetched besides the tasks (see views.included)
----@return string[] lines, table[] tasks, table[] highlights, table meta
+---@return string[] lines, table[] tasks, table meta
 ---   meta.notes { lnum, task_id, indent }[]: the task each description line
 ---   was drawn under, and the indent it was drawn with;
----   meta.annotations { lnum, text }[]: text to show beside a line.
+---   meta.annotations { lnum, text, group }[]: text to show beside a line.
 ---   For project views, heading_ids { lnum, kind, id, project_id?, name }[]:
 ---   the project or section each heading line was drawn for.
 ---   For date views, headings { [text] = date|"Overdue" } and
@@ -289,6 +278,7 @@ function M.build(data, opts)
     return build_by_date(data, view, present, project_names)
   end
 
+  local people = people_of(data)
   local children, roots = {}, {}
   for _, task in pairs(present) do
     -- A task whose parent is not here — filtered out, or completed and so not
@@ -342,7 +332,7 @@ function M.build(data, opts)
     walk({ project }, nil) -- anything in a cycle of parents, which never reaches the top
   end
 
-  local lines, tasks, highlights = {}, {}, {}
+  local lines, tasks = {}, {}
   -- Which project or section each heading was drawn for, so a heading is
   -- known by identity rather than by its name, which two can share.
   local heading_ids = {}
@@ -359,16 +349,13 @@ function M.build(data, opts)
   end
 
   local function emit(task, depth)
-    local text, spans = M.task_line(task, depth)
-    local lnum = push(text)
+    local lnum = push(M.task_line(task, depth))
     table.insert(tasks, { lnum = lnum, task = task })
-    for _, span in ipairs(spans) do
-      table.insert(highlights, { lnum = lnum, group = span[1], from = span[2], to = span[3] })
-    end
     for _, line in ipairs(M.description_lines(task, depth)) do
-      local dlnum = push(line)
-      table.insert(notes, { lnum = dlnum, task_id = task.id, indent = (depth + 1) * 2 })
-      table.insert(highlights, { lnum = dlnum, group = "YadoistDescription", from = 0, to = #line })
+      table.insert(notes, { lnum = push(line), task_id = task.id, indent = (depth + 1) * 2 })
+    end
+    for _, piece in ipairs(beside(task, people)) do
+      table.insert(annotations, { lnum = lnum, text = piece[1], group = piece[2] })
     end
     local kids = children[task.id]
     if kids then
@@ -415,9 +402,8 @@ function M.build(data, opts)
       local name = model.one_line(project.name)
       local lnum = push("# " .. name)
       table.insert(heading_ids, { lnum = lnum, kind = "project", id = project.id, name = name })
-      table.insert(highlights, { lnum = lnum, group = "YadoistProject", from = 0, to = #lines[lnum] })
       if inside[project.id] then
-        table.insert(annotations, { lnum = lnum, text = "in " .. inside[project.id] })
+        table.insert(annotations, { lnum = lnum, text = "in " .. inside[project.id], group = "YadoistAnnotation" })
       end
       push("")
       emit_group(project.id, nil)
@@ -430,7 +416,6 @@ function M.build(data, opts)
           local sname = model.one_line(section.name)
           local slnum = push("## " .. sname)
           table.insert(heading_ids, { lnum = slnum, kind = "section", id = section.id, project_id = project.id, name = sname })
-          table.insert(highlights, { lnum = slnum, group = "YadoistSection", from = 0, to = #lines[slnum] })
           push("")
           emit_group(project.id, section.id)
         end
@@ -445,7 +430,7 @@ function M.build(data, opts)
     lines = { ("# (nothing in %s)"):format(view.label) }
   end
 
-  return lines, tasks, highlights, { heading_ids = heading_ids, notes = notes, annotations = annotations }
+  return lines, tasks, { heading_ids = heading_ids, notes = notes, annotations = annotations }
 end
 
 return M

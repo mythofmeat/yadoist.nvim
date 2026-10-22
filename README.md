@@ -232,6 +232,11 @@ Todoist stops returning it.
 | `gr` | re-fetch from Todoist, asking first if there are unsaved edits |
 | `q` | close the buffer |
 
+In Insert mode, `<C-x><C-o>` completes `@labels` (in braces when the name needs
+them), project names in `#` headings, and section names in `##` headings,
+since a typo in any of them is refused on `:w`. It is the buffer's
+`omnifunc`, so completion plugins with an omni source offer the same.
+
 `:e` re-fetches too, and refuses while there are unsaved edits; `:e!` throws
 them away and re-fetches. Undo stops at the last time the buffer was drawn,
 the way it does after `:e`, so it never walks back into an older list.
@@ -320,10 +325,17 @@ Every highlight group links to a standard one, so the buffer follows your
 colourscheme without configuration. Override any of `YadoistProject`,
 `YadoistSection`, `YadoistCheckboxOpen`, `YadoistCheckboxDone`, `YadoistContent`,
 `YadoistContentDone`, `YadoistLabel`, `YadoistPriority1`–`3`, `YadoistDue`,
-`YadoistDueToday`, `YadoistDueOverdue` or `YadoistAnnotation` (the project names
-in date views) to taste. Highlighting is applied from the task data rather than
-by matching text, which is why an overdue date is coloured differently from one
-that is merely set.
+`YadoistDueToday`, `YadoistDueOverdue`, `YadoistDescription`, `YadoistDeadline`,
+`YadoistAssignee` or `YadoistAnnotation` (the text beside a line) to taste.
+
+Lines are coloured as they are drawn on screen, from their text, so a line you
+type is coloured like one yadoist drew. A date is coloured from the task data
+while the line still shows the date that was fetched, so a recurring task
+reads `<every day>` but is coloured as overdue when it is.
+
+Beside a line, in dim text that is never read back, yadoist shows a task's
+deadline and who it is assigned to (`→ you` when it is you), and in the date
+views which project it is in.
 
 ## How identity survives editing
 

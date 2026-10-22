@@ -5,6 +5,8 @@ vim.bo.commentstring = ""
 vim.bo.expandtab = true
 vim.bo.shiftwidth = 2
 vim.bo.tabstop = 2
+-- <C-x><C-o> completes @labels, and project and section names in headings.
+vim.bo.omnifunc = "v:lua.require'yadoist.complete'.omnifunc"
 
 -- Fold projects, then sections, then each task along with its description and
 -- subtasks. Every task line starts a fold of its own, so zc on a task folds
@@ -48,7 +50,7 @@ vim.api.nvim_create_autocmd("BufWinEnter", {
 })
 
 vim.b.undo_ftplugin = table.concat({
-  "setlocal commentstring< expandtab< shiftwidth< tabstop<",
+  "setlocal commentstring< expandtab< shiftwidth< tabstop< omnifunc<",
   "setlocal wrap< foldmethod< foldexpr< foldlevel<",
   "silent! autocmd! YadoistWindow" .. bufnr,
 }, " | ")
