@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Neovim ${{ matrix.neovim }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest release yadoist supports, the latest, and what is coming.
+        neovim: [v0.10.4, stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+
+      - name: Unit tests
+        run: nvim --headless -u NONE -i NONE -l tests/run.lua
+
+      # The suite switches zones itself for its time-zone checks; this runs
+      # everything else east of UTC with daylight saving too.
+      - name: Unit tests, in Sydney
+        run: nvim --headless -u NONE -i NONE -l tests/run.lua
+        env:
+          TZ: Australia/Sydney
+
+      - name: Buffer lifecycle tests
+        run: nvim --headless -u NONE -i NONE -l tests/lifecycle.lua
