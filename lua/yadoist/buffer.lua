@@ -261,6 +261,7 @@ end
 --- Re-fetch and redraw.
 ---@param opts table|nil
 ---  force    redraw even over unsaved edits
+---  full     read everything afresh, not just what changed (see store.read)
 ---  announce say how many tasks there are once drawn
 function M.refresh(bufnr, opts)
   opts = opts or {}
@@ -318,7 +319,7 @@ function M.refresh(bufnr, opts)
     fetch_extra(view, function(extra, extra_err)
       landed(data, extra, extra_err)
     end)
-  end)
+  end, opts.full)
 end
 
 --- Re-fetch and redraw, asking first if that would throw away unsaved edits.
@@ -329,7 +330,7 @@ function M.reload(bufnr)
       return
     end
   end
-  M.refresh(bufnr, { force = true, announce = true })
+  M.refresh(bufnr, { force = true, full = true, announce = true })
 end
 
 --- Parse the buffer and work out what :w would send.
@@ -691,7 +692,7 @@ function M.load(bufnr)
   end
   set_text(bufnr, { "# loading " .. view.label .. "..." })
   vim.bo[bufnr].modified = false
-  M.refresh(bufnr, { force = true })
+  M.refresh(bufnr, { force = true, full = true })
 end
 
 --- Route every yadoist:// buffer through load(). plugin/yadoist.lua does the

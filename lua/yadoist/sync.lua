@@ -190,6 +190,8 @@ function M.apply(ops, done)
         local s = reported[item.command.uuid]
         if s ~= "ok" then
           fail(item.op, s == nil and "Todoist did not report on it" or describe_error(s))
+        elseif item.command.type == "item_update_day_orders" then
+          store.note_day_orders(item.command.args.ids_to_orders)
         end
       end
       next_batch()

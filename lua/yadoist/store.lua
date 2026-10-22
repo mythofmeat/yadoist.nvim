@@ -69,10 +69,10 @@ local function merge(res, seq)
 end
 
 --- Send commands, or none for a plain read, along with a read of everything
---- that changed since the last one.
+--- that changed since the last one, or of everything if `full`.
 ---@param commands table[]|nil
 ---@param cb fun(res: table|nil, err: string|nil, info: table|nil)
-function M.sync(commands, cb)
+function M.sync(commands, cb, full)
   -- Another token is another account, whose data this is not.
   local account = config.token()
   if account ~= cache.account then
@@ -81,7 +81,8 @@ function M.sync(commands, cb)
   end
   cache.sent = cache.sent + 1
   local seq = cache.sent
-  api.sync({ sync_token = cache.token, resource_types = M.RESOURCES, commands = commands }, function(res, err, info)
+  local token = full and "*" or cache.token
+  api.sync({ sync_token = token, resource_types = M.RESOURCES, commands = commands }, function(res, err, info)
     if err then
       return cb(nil, err, info)
     end
@@ -108,14 +109,31 @@ function M.snapshot()
 end
 
 --- Bring everything up to date, then hand it back.
+---
+--- An incremental read misses one thing: Todoist never reports a change of
+--- day order in one, its own writes' included. So reading everything afresh
+--- (`full`) is what picks up a day reordered in another app.
 ---@param cb fun(data: table|nil, err: string|nil)
-function M.read(cb)
+function M.read(cb, full)
   M.sync(nil, function(_, err)
     if err then
       return cb(nil, err)
     end
     cb(M.snapshot())
-  end)
+  end, full)
+end
+
+--- Day orders a write has just set. Todoist will not say, so they are
+--- noted here, on copies, since buffers hold on to the tasks they drew.
+function M.note_day_orders(ids_to_orders)
+  for id, order in pairs(ids_to_orders) do
+    local task = cache.tasks[id]
+    if task then
+      local copy = vim.deepcopy(task)
+      copy.day_order = order
+      cache.tasks[id] = copy
+    end
+  end
 end
 
 --- Whether anything has been read yet.

@@ -193,11 +193,12 @@ function M.new(seed)
       touch("items", item)
     end
   end
+  -- As the real one does, it applies these but does not report them in an
+  -- incremental read, the write's own reply included: only a full read shows
+  -- them. It also numbers them its own way, keeping their order.
   function commands.item_update_day_orders(a)
     for id, order in pairs(a.ids_to_orders) do
-      local item = items[resolve(id)]
-      item.day_order = order
-      touch("items", item)
+      items[resolve(id)].day_order = order * 2
     end
   end
   function commands.project_update(a)

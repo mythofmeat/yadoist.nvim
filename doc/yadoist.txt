@@ -238,9 +238,10 @@ projects                                                   *yadoist-projects*
         Show only these projects, by name. `nil` shows them all.
 
 refresh_on_focus                                   *yadoist-refresh_on_focus*
-        Fetch again when the buffer is entered or Neovim regains focus. After
-        the first fetch only what changed is asked for, so it is cheap. It
-        never redraws over unsaved edits.
+        Fetch again when the buffer is entered or Neovim regains focus. This
+        asks only for what changed, so it is cheap; opening a view, |:e| and
+        `gr` read everything afresh, which is also what picks up a day
+        reordered in another app. It never redraws over unsaved edits.
 
 completed_days                                       *yadoist-completed_days*
         How many days back the `completed` view looks.
