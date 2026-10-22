@@ -9,9 +9,16 @@ function M.setup(opts)
 end
 
 --- Open the task buffer in a view: "all", "today", "upcoming", "overdue",
---- "inbox", or "project <name>". Defaults to "all".
+--- "inbox", "completed", "project <name>" or "filter <query>". Defaults to
+--- "all".
 function M.open(view)
   return require("yadoist.buffer").open(view)
+end
+
+--- Add a task without opening a buffer, through Todoist's own quick-add
+--- parser: "Call the plumber #House tomorrow p2 @phone".
+function M.add(text)
+  return require("yadoist.buffer").quick_add(text)
 end
 
 --- The views that can be passed to open().

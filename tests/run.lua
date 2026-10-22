@@ -1157,6 +1157,32 @@ do
   vim.fn.confirm = real_confirm
 end
 
+print("\nfilter and completed views")
+do
+  local views = require("yadoist.views")
+  eq("`filter X` and `filter/X` name the same view",
+    { select(2, views.get("filter today & #Work")), select(2, views.get("filter/today & #Work")) },
+    { "filter/today & #Work", "filter/today & #Work" })
+  eq("a filter query is sent percent-encoded", dapi._encode("today & #Work | @a+b"), "today%20%26%20%23Work%20%7C%20%40a%2Bb")
+
+  eq("a filter view draws what matched, with its parents, by project",
+    render.build(fixture(), { view = "filter/@x", extra = { filter_ids = { t3 = true } } }),
+    { "# House Chores", "", "- [ ] Fix the leaky sink @house", "  - [ ] Get the wrench back from Dave" })
+  eq("and nothing before it knows what matched", render.build(fixture(), { view = "filter/@x" }), { "# (nothing in filter @x)" })
+
+  local data = fixture()
+  table.insert(data.tasks, task("c1", "Done and dusted", { project_id = "p2", parent_id = "t2", completed_at = "2026-10-21T08:00:00Z" }))
+  eq("the completed view draws what was completed, with its open parents",
+    render.build(data, { view = "completed" }),
+    { "# House Chores", "", "- [ ] Fix the leaky sink @house", "  - [x] Done and dusted" })
+  local buf, st = mount(data, { view = "completed" })
+  local ops = ops_for(buf, st)
+  check("and sends nothing untouched", #ops == 0, vim.inspect(ops))
+  vim.api.nvim_buf_set_text(buf, 3, 5, 3, 6, { " " })
+  ops = ops_for(buf, st)
+  eq("unticking one reopens it", vim.tbl_map(function(o) return { o.kind, o.id } end, ops), { { "reopen", "c1" } })
+end
+
 --------------------------------------------------------------------- priority
 print("\npriority mapping")
 do

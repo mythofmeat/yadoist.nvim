@@ -151,6 +151,15 @@ function M.call(method, path, body, cb)
   try()
 end
 
+--- Percent-encode a value for a query string. vim.uri_encode leaves & # + =
+--- alone, as it must in a whole URI, but in a filter like "today & #Work"
+--- they would end the value early.
+local function encode(value)
+  return (tostring(value):gsub("[^%w%-._~]", function(c)
+    return ("%%%02X"):format(c:byte())
+  end))
+end
+
 --- Follow v1's cursor pagination to the end and hand back one flat list. A
 --- page comes as { [key] = items, next_cursor }.
 local function get_all(path, key, cb)
@@ -158,7 +167,7 @@ local function get_all(path, key, cb)
   local function page(cursor)
     local url = path .. (path:find("%?") and "&" or "?") .. "limit=200"
     if cursor then
-      url = url .. "&cursor=" .. vim.uri_encode(cursor)
+      url = url .. "&cursor=" .. encode(cursor)
     end
     M.call("GET", url, nil, function(res, err)
       if err then
@@ -188,7 +197,31 @@ function M.sync(body, cb)
   M.call("POST", "/sync", body, cb)
 end
 
+--- The open tasks a Todoist filter query matches, in its own language:
+--- "today & #Work", "@errand", "p1 | overdue".
+---@param cb fun(tasks: table[]|nil, err: string|nil)
+function M.filter(query, cb)
+  get_all("/tasks/filter?query=" .. encode(query), "results", cb)
+end
+
+--- Tasks completed between two times, given as seconds since the epoch.
+---@param cb fun(tasks: table[]|nil, err: string|nil)
+function M.completed(since, upto, cb)
+  local function stamp(t)
+    return encode(os.date("!%Y-%m-%dT%H:%M:%SZ", t))
+  end
+  get_all(("/tasks/completed/by_completion_date?since=%s&until=%s"):format(stamp(since), stamp(upto)), "items", cb)
+end
+
+--- Add a task the way Todoist's own quick add does, parsing "#Project",
+--- "@label", "p2" and dates out of the text.
+---@param cb fun(task: table|nil, err: string|nil)
+function M.quick_add(text, cb)
+  M.call("POST", "/tasks/quick", { text = text }, cb)
+end
+
 -- Exposed for the tests.
+M._encode = encode
 M._get_all = get_all
 M._build_config = build_config
 M._split_status = split_status

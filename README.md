@@ -53,6 +53,13 @@ Run `:Yadoist`.
 | `overdue` | past its due date and still open |
 | `inbox` | the Inbox project on its own |
 | `project <name>` | one project and its subprojects |
+| `filter <query>` | what a Todoist filter matches: `filter today & #Work`, `filter @errand` |
+| `completed` | tasks completed in the last week, to untick one ticked by mistake |
+
+`:Yadoist add <text>` adds a task without opening a buffer, through Todoist's
+own quick-add parser, so `:Yadoist add Call the plumber #House tomorrow p2`
+lands in House, due tomorrow, at priority 2. Being Todoist's parser, it
+creates any `@label` it has not seen. Open task buffers catch up at once.
 
 A view is only a filter. The buffer grammar never changes, and every edit works
 the same way whichever view you are looking at, so you can complete and retitle
@@ -62,13 +69,22 @@ other. Tasks a view hides are never mistaken for deleted ones.
 
 ### Project views
 
-`all`, `overdue`, `inbox` and `project` are grouped by project, with `# Project`
+`all`, `overdue`, `inbox`, `project`, `filter` and `completed` are grouped by
+project, with `# Project`
 headings, in the order Todoist's sidebar has them: each project is followed by
 the ones nested in it, whose headings say what they are nested in. A matching
 task always brings its parent along, so a subtask is never shown without the
 task it belongs to. `overdue` leaves out projects with nothing in them, so use
 `all` or `project <name>` to add a task to an empty project; `inbox` always
 shows the Inbox, empty or not.
+
+`filter` takes Todoist's whole filter language and asks Todoist which tasks
+match; label views come with it (`filter @errand`). A task added in a filter
+view goes into the project of the heading it is under, and stays in sight
+until the view is next refreshed, whether the filter matches it or not.
+
+`completed` shows what was completed in the last `completed_days` days, open
+parents included. Unticking a line there reopens it.
 
 `:Yadoist project Work` shows `Work` and every project nested under it. Names
 are matched ignoring case and may contain spaces (`:Yadoist project House
@@ -290,6 +306,9 @@ require("yadoist").setup({
   -- fetch, each one asks only for what changed, so this is cheap.
   refresh_on_focus = true,
 
+  -- How many days back the `completed` view looks.
+  completed_days = 7,
+
   -- Per-request timeout, in milliseconds.
   timeout = 15000,
 
@@ -335,8 +354,8 @@ answer to that name, `:w` says so rather than guess.
   heading yadoist drew renames that project or section instead, unless another
   one there already has the new name.
 - **Work offline.** There is no local copy by design.
-- **Show completed tasks.** Todoist only returns active ones. A task you tick
-  stays visible until the next refresh, then disappears.
+- **Show completed tasks**, outside the `completed` view. A task you tick
+  stays visible until the next refresh, then disappears from every other view.
 - **Show archived projects and sections, or anything inside them.** A task whose
   section has been archived is left out rather than drawn at the top level,
   which would otherwise read as a move you never asked for.
