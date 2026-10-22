@@ -105,8 +105,9 @@ is always a heading to add a task under.
 Editing follows from the headings being days rather than projects:
 
 - **Moving a line under another day reschedules it**, as dragging it does in
-  Todoist. A timed task keeps its time. Recurring tasks refuse, since a fixed
-  date would turn them into one-offs — edit their `<...>` instead.
+  Todoist. A timed task keeps its local time of day. Recurring tasks refuse,
+  since a fixed date would turn them into one-offs — edit their `<...>`
+  instead.
 - **A new line under a day** goes to the Inbox, due that day unless you give it
   a `<date>` of its own. Under `# Overdue` it needs one.
 - **A new subtask** goes wherever its parent is.
@@ -139,7 +140,9 @@ date.
 
 However a one-off date was typed, it is shown as the date it resolved to —
 `<2026-09-24>`, or `<2026-09-24 15:00>` with a time — so every date in the
-buffer reads the same way.
+buffer reads the same way. A time fixed to a time zone is shown in your local
+time, daylight saving included, and a date view files it under the day it
+falls on where you are.
 
 Labels, priorities and dates are only recognised at the end of a line, so a task
 like `email bob@example.com` keeps its address instead of growing a label.
