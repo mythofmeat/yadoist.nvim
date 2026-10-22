@@ -2,9 +2,10 @@
 -- in the buffer.
 --
 -- Identity comes from extmarks, not line positions, so tasks can be reordered
--- and re-indented freely. A line that lost its mark (because its entire text
--- was replaced) is paired back up by content where possible, and anything left
--- over is a genuine deletion — which is what the confirmation prompt is for.
+-- and re-indented freely. A mark is lost only when its line is deleted, so a
+-- line without one is new, unless it reads exactly like a task that went
+-- missing (a line cut and pasted elsewhere). Anything left over is a genuine
+-- deletion — which is what the confirmation prompt is for.
 local model = require("yadoist.model")
 
 local M = {}
@@ -95,8 +96,7 @@ end
 
 --- @param ctx table
 ---   entries      parsed buffer entries
----   resolve       fun(lnum): task|nil -- live extmark lookup
----   resolve_stale fun(lnum): task|nil -- invalidated extmark lookup
+---   resolve      fun(lnum): task|nil -- the task whose live mark is on that line
 ---   known        { [task_id] = task } -- everything we rendered
 ---   project_ids  { [name] = id }
 ---   section_ids  { [project_id] = { [name] = id } }
@@ -123,23 +123,7 @@ function M.compute(ctx)
     end
   end
 
-  -- 2. Rewriting a whole line (cc) drops its mark, but the dead mark stays on
-  --    that row, so the rewritten line can reclaim it. Deleting a line (dd)
-  --    also leaves a dead mark behind, except it lands on a row that already
-  --    has a live mark of its own — and step 1 has already claimed that — so
-  --    only genuine rewrites get this far.
-  if ctx.resolve_stale then
-    for _, e in ipairs(entries) do
-      if not e.task then
-        local task = ctx.resolve_stale(e.lnum)
-        if task and not seen[task.id] and known[task.id] then
-          claim(e, task)
-        end
-      end
-    end
-  end
-
-  -- 3. Whatever is left: lines with no task, and tasks with no line.
+  -- 2. Whatever is left: lines with no task, and tasks with no line.
   local creates, deletes = {}, {}
   for _, e in ipairs(entries) do
     if not e.task then
@@ -155,8 +139,9 @@ function M.compute(ctx)
     return tostring(a.content) < tostring(b.content)
   end)
 
-  -- 4. Last chance: a line that moved and lost its mark, but still reads the
-  --    same, is the same task rather than a delete plus a create.
+  -- 3. Last chance: a line that was cut and pasted lost its mark, but if it
+  --    still reads the same it is the same task rather than a delete plus a
+  --    create.
   local buckets = {}
   for i, task in ipairs(deletes) do
     buckets[task.content] = buckets[task.content] or {}
@@ -185,7 +170,7 @@ function M.compute(ctx)
     end
   end
 
-  -- 5. Resolve each line's project, section and parent.
+  -- 4. Resolve each line's project, section and parent.
   local by_lnum = {}
   for _, e in ipairs(entries) do
     by_lnum[e.lnum] = e
@@ -230,7 +215,7 @@ function M.compute(ctx)
     return {}, errors
   end
 
-  -- 6. Creates, in buffer order so parents land before their children.
+  -- 5. Creates, in buffer order so parents land before their children.
   for _, e in ipairs(still_creating) do
     table.insert(ops, {
       kind = "create",
@@ -249,7 +234,7 @@ function M.compute(ctx)
     })
   end
 
-  -- 7. Field updates and moves on tasks we already knew about.
+  -- 6. Field updates and moves on tasks we already knew about.
   for _, e in ipairs(entries) do
     local task = e.task
     if task then
@@ -333,7 +318,7 @@ function M.compute(ctx)
     end
   end
 
-  -- 8. Deletions last, so a failed write leaves the data intact.
+  -- 7. Deletions last, so a failed write leaves the data intact.
   for _, task in ipairs(still_deleting) do
     table.insert(ops, { kind = "delete", id = task.id, content = task.content })
   end

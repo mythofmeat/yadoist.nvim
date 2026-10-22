@@ -232,11 +232,12 @@ appears in the buffer text, and because identity comes from the mark rather than
 from a line number you can reorder, re-indent and re-nest freely — a moved line
 is a move, not a delete and a create.
 
-Replacing an entire line at once, which `cc` does, invalidates that mark. The
-dead mark stays on the row, so the rewritten line reclaims it and stays the same
-task. A line that no longer resolves to any mark, and whose text does not match
-anything that went missing, is treated as a deletion — and that is what the
-confirmation prompt is for.
+The mark is zero-width, at the start of the line, so it survives any edit
+within the line — `cc`, `S`, `:s`, `>>` — and is lost only when the line itself
+is deleted. A line cut and pasted elsewhere (`ddp`) arrives without a mark, but
+if it still reads exactly like the task that went missing it is that task, moved.
+A task whose line is gone and was not pasted back is treated as a deletion — and
+that is what the confirmation prompt is for.
 
 ## Things it deliberately does not do
 

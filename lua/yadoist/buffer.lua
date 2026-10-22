@@ -50,33 +50,28 @@ local function report(bufnr, errors)
 end
 
 --- Map buffer lines back to the tasks they were rendered from, using the
---- extmarks rather than line numbers so reordering is free.
----
---- Returns two lookups: one over marks that are still live, and one over marks
---- that were invalidated because their whole line was replaced. They share a
---- claim set, so no task can be matched twice.
-local function resolvers(bufnr, st)
-  local live, dead, claimed = {}, {}, {}
+--- extmarks rather than line numbers so reordering is free. Only live marks
+--- count: a mark dies only when its line is deleted, so a dead one says
+--- nothing about the line that now sits where it was.
+local function resolver(bufnr, st)
+  local rows, claimed = {}, {}
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns_ids, 0, -1, { details = true })) do
     local id, row, details = mark[1], mark[2], mark[4]
-    local bucket = (details and details.invalid) and dead or live
-    bucket[row] = bucket[row] or {}
-    table.insert(bucket[row], id)
-  end
-
-  local function lookup(bucket)
-    return function(lnum)
-      for _, id in ipairs(bucket[lnum - 1] or {}) do
-        if not claimed[id] and st.marks[id] then
-          claimed[id] = true
-          return st.marks[id]
-        end
-      end
-      return nil
+    if not (details and details.invalid) then
+      rows[row] = rows[row] or {}
+      table.insert(rows[row], id)
     end
   end
 
-  return lookup(live), lookup(dead)
+  return function(lnum)
+    for _, id in ipairs(rows[lnum - 1] or {}) do
+      if not claimed[id] and st.marks[id] then
+        claimed[id] = true
+        return st.marks[id]
+      end
+    end
+    return nil
+  end
 end
 
 function M.render(bufnr)
@@ -102,14 +97,11 @@ function M.render(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, ns_hl, 0, -1)
   vim.diagnostic.reset(ns_diag, bufnr)
 
+  -- Zero-width, so editing anything within a line (cc, S, :s) keeps its mark,
+  -- and only deleting the line itself invalidates it.
   st.marks, st.known = {}, {}
   for _, entry in ipairs(tasks) do
-    local row = entry.lnum - 1
-    local mark = vim.api.nvim_buf_set_extmark(bufnr, ns_ids, row, 0, {
-      end_row = row,
-      end_col = #lines[entry.lnum],
-      invalidate = true,
-    })
+    local mark = vim.api.nvim_buf_set_extmark(bufnr, ns_ids, entry.lnum - 1, 0, { invalidate = true })
     st.marks[mark] = entry.task
     st.known[entry.task.id] = entry.task
   end
@@ -201,6 +193,26 @@ function M.refresh(bufnr, opts)
   end)
 end
 
+--- Parse the buffer and work out what :w would send.
+---@return table[] ops, table[] errors
+function M.compute(bufnr)
+  local st = state[bufnr]
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local entries, errors = parse.buffer(lines)
+  if #errors > 0 then
+    return {}, errors
+  end
+  return diff.compute({
+    entries = entries,
+    resolve = resolver(bufnr, st),
+    known = st.known,
+    project_ids = st.project_ids or {},
+    section_ids = st.section_ids or {},
+    by_date = st.by_date,
+    label_names = st.label_names,
+  })
+end
+
 local function write(bufnr)
   local st = state[bufnr]
   if not st then
@@ -222,25 +234,9 @@ local function write(bufnr)
       :format(st.drawn_on), vim.log.levels.WARN)
   end
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local entries, errors = parse.buffer(lines)
+  local ops, errors = M.compute(bufnr)
   if #errors > 0 then
     return report(bufnr, errors)
-  end
-
-  local resolve, resolve_stale = resolvers(bufnr, st)
-  local ops, resolve_errors = diff.compute({
-    entries = entries,
-    resolve = resolve,
-    resolve_stale = resolve_stale,
-    known = st.known,
-    project_ids = st.project_ids or {},
-    section_ids = st.section_ids or {},
-    by_date = st.by_date,
-    label_names = st.label_names,
-  })
-  if #resolve_errors > 0 then
-    return report(bufnr, resolve_errors)
   end
 
   vim.diagnostic.reset(ns_diag, bufnr)
@@ -273,11 +269,12 @@ local function toggle(bufnr)
   if not line then
     return
   end
-  local flipped = line:gsub("^(%s*%- %[)([ xX])(%])", function(open, mark, close)
-    return open .. (mark == " " and "x" or " ") .. close
-  end, 1)
-  if flipped ~= line then
-    vim.api.nvim_buf_set_lines(bufnr, lnum - 1, lnum, false, { flipped })
+  local indent, box = line:match("^(%s*)%- %[([ xX])%]")
+  if indent then
+    -- Change just that character: replacing the whole line would delete it,
+    -- and its identity mark with it.
+    local col = #indent + 3
+    vim.api.nvim_buf_set_text(bufnr, lnum - 1, col, lnum - 1, col + 1, { box == " " and "x" or " " })
   end
 end
 
@@ -435,6 +432,6 @@ end
 -- Exposed for the tests.
 M._state = state
 M._ns_ids = ns_ids
-M._resolvers = resolvers
+M._toggle = toggle
 
 return M
