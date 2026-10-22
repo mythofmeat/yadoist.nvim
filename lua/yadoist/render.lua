@@ -79,13 +79,7 @@ function M.description_lines(task, depth)
   return out
 end
 
-local function by_order(a, b)
-  local oa, ob = model.order(a), model.order(b)
-  if oa ~= ob then
-    return oa < ob
-  end
-  return tostring(a.id) < tostring(b.id)
-end
+local by_order, by_day = model.by_order, model.by_day
 
 --- The heading for one day, spelled the way Todoist spells it:
 --- "Sep 24 · Tomorrow · Thursday".
@@ -103,24 +97,6 @@ function M.day_heading(date, offset)
 end
 
 M.OVERDUE = "Overdue"
-
--- Within a day, Todoist's own manual day order first, then priority, then the
--- task's place in its project.
-local function by_day(a, b)
-  local function day_order(t)
-    local n = tonumber(t.day_order)
-    return (n and n >= 0) and n or math.huge
-  end
-  local da, db = day_order(a), day_order(b)
-  if da ~= db then
-    return da < db
-  end
-  local pa, pb = tonumber(a.priority) or 1, tonumber(b.priority) or 1
-  if pa ~= pb then
-    return pa > pb
-  end
-  return by_order(a, b)
-end
 
 --- The date views: `# Overdue` first when there is anything overdue, then one
 --- heading per day, every day drawn even when empty so there is somewhere to

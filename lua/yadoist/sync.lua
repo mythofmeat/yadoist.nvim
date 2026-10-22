@@ -126,6 +126,18 @@ local function commands_for(ops)
         args.parent_id = temp_id(op.parent_lnum)
       end
       add(op, "item_move", args)
+    elseif op.kind == "reorder" then
+      add(op, "item_reorder", {
+        items = vim.tbl_map(function(item)
+          return { id = item.id or temp_id(item.lnum), child_order = item.child_order }
+        end, op.items),
+      })
+    elseif op.kind == "day_order" then
+      local orders = {}
+      for i, id in ipairs(op.ids) do
+        orders[id] = i
+      end
+      add(op, "item_update_day_orders", { ids_to_orders = orders })
     elseif op.kind == "close" then
       add(op, "item_close", { id = op.id })
     elseif op.kind == "reopen" then
@@ -188,10 +200,12 @@ function M.apply(ops, done)
       local item = pending[i]
       -- A temp_id only means something inside the request that created it, so
       -- anything a previous batch created is named by its real id.
-      for _, key in ipairs({ "id", "parent_id" }) do
-        local v = item.command.args[key]
-        if v and ids[v] then
-          item.command.args[key] = ids[v]
+      local args = item.command.args
+      for _, named in ipairs(vim.list_extend({ args }, args.items or {})) do
+        for _, key in ipairs({ "id", "parent_id" }) do
+          if named[key] and ids[named[key]] then
+            named[key] = ids[named[key]]
+          end
         end
       end
       table.insert(batch, item)
@@ -233,18 +247,24 @@ M._commands_for = commands_for
 
 --- One-line summary of what a write is about to do, for the message area.
 function M.describe(ops)
-  local counts, order = {}, { "rename", "create", "update", "move", "close", "reopen", "delete" }
+  local order = { "rename", "create", "update", "move", "close", "reopen", "delete", "reorder", "day_order" }
   local words = {
     rename = "renamed", create = "added", update = "updated", move = "moved",
     close = "completed", reopen = "reopened", delete = "deleted",
+    reorder = { "list reordered", "lists reordered" }, day_order = { "day reordered", "days reordered" },
   }
+  local counts = {}
   for _, op in ipairs(ops) do
     counts[op.kind] = (counts[op.kind] or 0) + 1
   end
   local parts = {}
   for _, kind in ipairs(order) do
-    if counts[kind] then
-      table.insert(parts, ("%d %s"):format(counts[kind], words[kind]))
+    local n, word = counts[kind], words[kind]
+    if n then
+      if type(word) == "table" then
+        word = word[n == 1 and 1 or 2]
+      end
+      table.insert(parts, ("%d %s"):format(n, word))
     end
   end
   return table.concat(parts, ", ")

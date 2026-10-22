@@ -302,6 +302,7 @@ function M.compute(bufnr)
     orphans = orphans,
     heading_ids = st.heading_ids,
     known = st.known,
+    tasks = st.data and st.data.tasks or {},
     project_ids = st.project_ids or {},
     section_ids = st.section_ids or {},
     by_date = st.by_date,
@@ -352,6 +353,9 @@ end
 --- line whose changes all landed is known by what it now says, and a created
 --- one gets its new task's mark, so the next :w sends only what failed.
 local function fold(bufnr, st, result)
+  -- Todoist's reply brought back whatever landed, and the next :w works out
+  -- the order of each list from it.
+  st.data = store.snapshot()
   local landed, mine = {}, {}
   for _, op in ipairs(result.ops) do
     local e = op.entry

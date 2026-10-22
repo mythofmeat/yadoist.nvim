@@ -30,6 +30,34 @@ function M.order(x)
   return tonumber(x.child_order) or tonumber(x.section_order) or tonumber(x.order) or 0
 end
 
+--- Siblings in the order Todoist shows them; the id settles ties, so the
+--- order is the same every time.
+function M.by_order(a, b)
+  local oa, ob = M.order(a), M.order(b)
+  if oa ~= ob then
+    return oa < ob
+  end
+  return tostring(a.id) < tostring(b.id)
+end
+
+--- Within a day, Todoist's own manual day order first, then priority, then the
+--- task's place in its project.
+function M.by_day(a, b)
+  local function day_order(t)
+    local n = tonumber(t.day_order)
+    return (n and n >= 0) and n or math.huge
+  end
+  local da, db = day_order(a), day_order(b)
+  if da ~= db then
+    return da < db
+  end
+  local pa, pb = tonumber(a.priority) or 1, tonumber(b.priority) or 1
+  if pa ~= pb then
+    return pa > pb
+  end
+  return M.by_order(a, b)
+end
+
 --- Seconds since the epoch for a UTC calendar time. os.time() reads its table
 --- as local time, and correcting that by the offset from UTC in force now is
 --- an hour out for any date across a daylight-saving change, so this does the
