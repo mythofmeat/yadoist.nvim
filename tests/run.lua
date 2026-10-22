@@ -1071,6 +1071,92 @@ do
     "2 lists reordered, 1 day reordered")
 end
 
+print("\npreview")
+do
+  local preview = require("yadoist.preview")
+  local config = require("yadoist.config")
+  local asked, answer = nil, 1
+  local real_confirm = vim.fn.confirm
+  vim.fn.confirm = function(msg, choices)
+    asked = { msg = msg, choices = choices }
+    return answer
+  end
+  local function ask(ops, info)
+    asked = nil
+    return preview.confirm(ops, info or {})
+  end
+
+  local buf, st = mount(fixture())
+  vim.api.nvim_buf_set_text(buf, 2, 6, 2, 14, { "Buy oat milk" })
+  local ops, _, info = ops_for(buf, st)
+  ask(ops, info)
+  check("an ordinary edit is sent without asking", asked == nil)
+  config.options.confirm = "always"
+  ask(ops, info)
+  check("unless every write is to be asked about", asked ~= nil and asked.choices == "&Send\n&Cancel"
+    and asked.msg:find('change    "Buy milk": title', 1, true) ~= nil, asked and asked.msg)
+  config.options.confirm = true
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, {})
+  ops, _, info = ops_for(buf, st)
+  answer = 2
+  local kept = ask(ops, info)
+  check("a delete is asked about, and can be left out", asked ~= nil and #kept == 0
+    and asked.msg:find("for everyone its project is shared with", 1, true) ~= nil, asked and asked.msg)
+  answer = 3
+  check("or the whole write cancelled", ask(ops, info) == nil)
+  config.options.confirm = false
+  answer = 1
+  check("unless asking is turned off", ask(ops, info) == ops and asked == nil)
+  config.setup({ token = "test-token", confirm_delete = false })
+  check("as the old confirm_delete = false still does", config.options.confirm == false)
+  config.setup({ token = "test-token" })
+
+  -- Deleting a heading line drops its tasks under the heading above: the
+  -- mass move that is easy to make by accident.
+  buf, st = mount(with(function(d)
+    d.sections, d.tasks[4] = {}, nil
+  end))
+  vim.api.nvim_buf_set_lines(buf, 4, 5, false, {}) -- "# House Chores"
+  ops, _, info = ops_for(buf, st)
+  ask(ops, info)
+  check("moving tasks after deleting a heading is asked about", asked ~= nil and info.headings_removed == 1
+    and asked.msg:find('move      "Fix the leaky sink" to Inbox', 1, true) ~= nil, asked and asked.msg)
+
+  -- A parent drawn only because a subtask matched the view has subtasks the
+  -- view hides, and Todoist completes or deletes them along with it.
+  local yesterday = model.date_after(-1)
+  local data = {
+    projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 } },
+    sections = {},
+    tasks = {
+      task("o", "Before", { child_order = 0, due = { date = yesterday, string = "x" } }),
+      task("p", "Parent", { child_order = 1 }),
+      task("k1", "Late child", { parent_id = "p", child_order = 1, due = { date = yesterday, string = "x" } }),
+      task("k2", "Hidden child", { parent_id = "p", child_order = 2 }),
+    },
+  }
+  buf, st = mount(data, { view = "overdue" })
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local row = vim.fn.index(lines, "- [ ] Parent")
+  vim.api.nvim_buf_set_text(buf, row, 3, row, 4, { "x" })
+  ops, _, info = ops_for(buf, st)
+  eq("ticking it names the subtasks it completes that the view hides",
+    vim.tbl_map(function(o) return { o.kind, o.hidden } end, ops), { { "close", { "Hidden child" } } })
+  ask(ops, info)
+  check("and is asked about", asked ~= nil and asked.msg:find("with 1 subtask this view hides: Hidden child", 1, true) ~= nil,
+    asked and asked.msg)
+
+  buf, st = mount(data, { view = "overdue" })
+  vim.api.nvim_buf_set_lines(buf, row, row + 2, false, {}) -- Parent and its shown subtask
+  ops = ops_for(buf, st)
+  local delete = vim.tbl_filter(function(o) return o.kind == "delete" and o.id == "p" end, ops)[1]
+  eq("so is deleting it", delete and delete.hidden, { "Hidden child" })
+
+  vim.fn.confirm = real_confirm
+end
+
 --------------------------------------------------------------------- priority
 print("\npriority mapping")
 do

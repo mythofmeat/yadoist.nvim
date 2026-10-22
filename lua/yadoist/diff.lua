@@ -458,6 +458,7 @@ function M.compute(ctx)
         moved = { project_id = e.project_id }
       end
       if moved then
+        local parent = e.parent_lnum and by_lnum[e.parent_lnum]
         table.insert(ops, {
           kind = "move",
           id = task.id,
@@ -465,6 +466,7 @@ function M.compute(ctx)
           fields = moved,
           parent_lnum = pending_parent,
           entry = e,
+          where = parent and ("under " .. parent.content) or (e.section and (e.project .. " › " .. e.section) or e.project),
         })
       end
 
@@ -502,6 +504,33 @@ function M.compute(ctx)
   -- 9. Deletions last, so a failed write leaves the data intact.
   for _, task in ipairs(still_deleting) do
     table.insert(ops, { kind = "delete", id = task.id, content = task.content })
+  end
+
+  -- 10. Deleting or completing a task takes its subtasks with it, in Todoist.
+  --     Those the view does not show are named, so that can be asked about:
+  --     a task drawn only as the parent of something the view matched has
+  --     subtasks it hides.
+  local children = {}
+  for _, task in ipairs(ctx.tasks or {}) do
+    if task.parent_id and not model.is_completed(task) then
+      children[task.parent_id] = children[task.parent_id] or {}
+      table.insert(children[task.parent_id], task)
+    end
+  end
+  local function hidden(id, out)
+    for _, kid in ipairs(children[id] or {}) do
+      if not known[kid.id] then
+        table.insert(out, model.content(kid))
+      end
+      hidden(kid.id, out)
+    end
+    return out
+  end
+  for _, op in ipairs(ops) do
+    if op.kind == "delete" or op.kind == "close" then
+      local kids = hidden(op.id, {})
+      op.hidden = #kids > 0 and kids or nil
+    end
   end
 
   return ops, errors, info

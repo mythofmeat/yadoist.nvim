@@ -6,6 +6,7 @@ local diff = require("yadoist.diff")
 local highlight = require("yadoist.highlight")
 local model = require("yadoist.model")
 local parse = require("yadoist.parse")
+local preview = require("yadoist.preview")
 local render = require("yadoist.render")
 local store = require("yadoist.store")
 local sync = require("yadoist.sync")
@@ -412,16 +413,12 @@ local function fold(bufnr, st, result)
 end
 
 --- Take in Todoist's answer to a write.
-local function finish(bufnr, st, outcome)
+local function finish(bufnr, st, result)
   st.busy, st.waited_out = false, nil
   if state[bufnr] ~= st or not vim.api.nvim_buf_is_loaded(bufnr) then
     return
   end
   vim.bo[bufnr].modifiable = true
-  local result, err = outcome.result, outcome.err
-  if err then
-    return notify(err, vim.log.levels.WARN) -- nothing was sent; the edits stay
-  end
   if #result.ops == 0 then
     return notify("nothing was sent", vim.log.levels.WARN)
   end
@@ -476,7 +473,7 @@ local function write(bufnr)
       :format(st.drawn_on), vim.log.levels.WARN)
   end
 
-  local ops, errors = M.compute(bufnr)
+  local ops, errors, info = M.compute(bufnr)
   if #errors > 0 then
     return report(bufnr, errors)
   end
@@ -488,13 +485,18 @@ local function write(bufnr)
     return notify("no changes")
   end
 
+  ops = preview.confirm(ops, info)
+  if not ops then
+    return notify("write cancelled — nothing was sent", vim.log.levels.WARN)
+  end
+
   -- The reply is matched back to lines by their numbers, so the buffer is
   -- held still until it comes.
   st.busy = true
   vim.bo[bufnr].modifiable = false
   local outcome
-  sync.apply(ops, function(result, err)
-    outcome = { result = result, err = err }
+  sync.apply(ops, function(result)
+    outcome = result
     if st.waited_out then
       finish(bufnr, st, outcome)
     end
