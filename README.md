@@ -63,10 +63,12 @@ other. Tasks a view hides are never mistaken for deleted ones.
 ### Project views
 
 `all`, `overdue`, `inbox` and `project` are grouped by project, with `# Project`
-headings. A matching task always brings its parent along, so a subtask is never
-shown without the task it belongs to. `overdue` and `inbox` leave out projects
-with nothing in them, so use `all` or `project <name>` to add a task to an
-empty project.
+headings, in the order Todoist's sidebar has them: each project is followed by
+the ones nested in it, whose headings say what they are nested in. A matching
+task always brings its parent along, so a subtask is never shown without the
+task it belongs to. `overdue` leaves out projects with nothing in them, so use
+`all` or `project <name>` to add a task to an empty project; `inbox` always
+shows the Inbox, empty or not.
 
 `:Yadoist project Work` shows `Work` and every project nested under it. Names
 are matched ignoring case and may contain spaces (`:Yadoist project House
@@ -175,8 +177,13 @@ paragraph breaks. Tabs and extra indentation in a description are kept.
 
 A line starting with `- [ ]` is a subtask, so a checklist inside a description
 is drawn with a backslash in front of each box — `\- [ ] one` — and a line you
-type that way stays in the description. Closing a task's fold hides its
+type that way stays in the description. Closing a task's fold (`zc`) hides its
 description along with its subtasks.
+
+Description lines remember the task they were drawn under. Deleting a task's
+line deletes its description with it, even though the lines stay on screen
+until the next refresh, rather than adding them to the task above; and moving a
+task's line without its description leaves its description unchanged.
 
 ### Recurring tasks
 
@@ -280,9 +287,12 @@ answer to that name, `:w` says so rather than guess.
 ## Tests
 
 ```sh
-nvim --headless -l tests/run.lua
+nvim --headless -u NONE -i NONE -l tests/run.lua
+nvim --headless -u NONE -i NONE -l tests/lifecycle.lua
 ```
 
-Covers the parser, the renderer, the render-parse round trip, and every
-operation the diff can produce, including identity survival through real `cc`
-and `dd` keystrokes.
+`run.lua` covers the parser, the renderer, the render-parse round trip (with a
+randomised test of it), every operation the diff can produce, including
+identity surviving real `cc`, `dd` and `ddp` keystrokes, and due dates in
+several time zones. `lifecycle.lua` covers the buffer as you meet it: windows
+and folding.

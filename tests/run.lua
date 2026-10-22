@@ -43,7 +43,7 @@ local function fixture()
       { id = "p1", name = "Inbox", is_inbox_project = true, child_order = 1 },
       { id = "p2", name = "House Chores", child_order = 2 },
     },
-    sections = { { id = "s1", project_id = "p2", name = "Kitchen", child_order = 1 } },
+    sections = { { id = "s1", project_id = "p2", name = "Kitchen", section_order = 1 } },
     labels = {
       { id = "l1", name = "errand" },
       { id = "l2", name = "house" },
@@ -162,7 +162,7 @@ do
     table.insert(d.tasks, task("t5", "In the other House Chores", { project_id = "p3" }))
   end))
   no_ops("two sections sharing a name keep their own tasks", with(function(d)
-    table.insert(d.sections, { id = "s2", project_id = "p2", name = "Kitchen", child_order = 2 })
+    table.insert(d.sections, { id = "s2", project_id = "p2", name = "Kitchen", section_order = 2 })
     table.insert(d.tasks, task("t6", "In the other Kitchen", { project_id = "p2", section_id = "s2" }))
   end))
 
@@ -580,8 +580,8 @@ do
         { id = "p5", name = "Empty", child_order = 5 },
       },
       sections = {
-        { id = "s1", project_id = "p2", name = "Meetings", child_order = 1 },
-        { id = "s2", project_id = "p5", name = "Ideas", child_order = 1 },
+        { id = "s1", project_id = "p2", name = "Meetings", section_order = 1 },
+        { id = "s2", project_id = "p5", name = "Ideas", section_order = 1 },
       },
       tasks = {
         task("w1", "Ship it", { project_id = "p2" }),
@@ -853,7 +853,7 @@ do
       { id = "p3", name = "Deleted", child_order = 3, is_deleted = true },
     },
     sections = {
-      { id = "s1", project_id = "p1", name = "Gone", child_order = 1, is_deleted = true },
+      { id = "s1", project_id = "p1", name = "Gone", section_order = 1, is_deleted = true },
     },
     tasks = {
       task("h1", "Still here"),
@@ -865,6 +865,100 @@ do
   -- would make the diff read it as a move the user never asked for.
   eq("archived and deleted things are left out", render.build(hidden),
     { "# Inbox", "", "- [ ] Still here" })
+end
+
+print("\norder and placement")
+do
+  local d = fixture()
+  d.sections = { -- v1 sections carry section_order, not child_order
+    { id = "zz", project_id = "p2", name = "First", section_order = 1 },
+    { id = "aa", project_id = "p2", name = "Second", section_order = 2 },
+  }
+  d.tasks[4].section_id = "zz"
+  eq("sections are drawn in Todoist's section_order",
+    vim.tbl_filter(function(l) return l:match("^## ") end, render.build(d)), { "## First", "## Second" })
+
+  local tree = { sections = {}, tasks = {}, projects = {
+    { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 },
+    { id = "a", name = "A", child_order = 1 }, { id = "b", name = "B", child_order = 2 },
+    { id = "a1", name = "A1", parent_id = "a", child_order = 1 },
+    { id = "a2", name = "A2", parent_id = "a", child_order = 2 },
+    { id = "b1", name = "B1", parent_id = "b", child_order = 1 },
+    { id = "b1x", name = "B1x", parent_id = "b1", child_order = 1 },
+  } }
+  local lines, _, _, meta = render.build(tree)
+  eq("projects are drawn in sidebar (depth-first) order",
+    vim.tbl_filter(function(l) return l:match("^# ") end, lines), { "# Inbox", "# A", "# A1", "# A2", "# B", "# B1", "# B1x" })
+  local notes = {}
+  for _, a in ipairs(meta.annotations) do
+    notes[lines[a.lnum]] = a.text
+  end
+  eq("a nested project's heading says what it is nested in",
+    { notes["# A1"], notes["# B1x"], notes["# A"] }, { "in A", "in B › B1", nil })
+
+  eq("an empty Inbox still gets its heading in the inbox view", render.build({ sections = {}, tasks = {},
+    projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 } } }, { view = "inbox" }), { "# Inbox" })
+
+  -- Todoist goes on returning a deleted project's tasks, not marked deleted,
+  -- for minutes afterwards. They must not be drawn, or :w would move them.
+  d = fixture()
+  d.projects[2].is_deleted = true
+  eq("a deleted project's tasks are not drawn", render.build(d), { "# Inbox", "", "- [ ] Buy milk @errand !p2 <2099-01-01>" })
+end
+
+print("\ndescriptions left behind")
+do
+  local function kinds(ops)
+    return vim.tbl_map(function(o) return o.kind .. ":" .. tostring(o.id or o.content) end, ops or {})
+  end
+  local function under(lines, text)
+    return vim.fn.index(lines, text)
+  end
+
+  local d = fixture()
+  table.insert(d.tasks, task("t0", "Above", { child_order = 0 }))
+  d.tasks[1].description = "notes\n\nmore notes"
+  local buf, st = mount(d)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local row = under(lines, "- [ ] Buy milk @errand !p2 <2099-01-01>")
+  vim.api.nvim_buf_set_lines(buf, row, row + 1, false, {}) -- dd on the task line only
+  local ops, errors = ops_for(buf, st)
+  eq("deleting a task line does not hand its description to the task above", kinds(ops), { "delete:t1" })
+
+  d = fixture()
+  d.tasks[1].description = "notes"
+  buf, st = mount(d)
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, {}) -- the first task under its heading
+  ops, errors = ops_for(buf, st)
+  check("nor leaves an error behind when it was the first under its heading",
+    #errors == 0 and vim.deep_equal(kinds(ops), { "delete:t1" }), vim.inspect(errors) .. vim.inspect(ops))
+
+  d = fixture()
+  table.insert(d.tasks, task("t0", "Above", { child_order = 0 }))
+  d.tasks[1].description = "notes"
+  buf, st = mount(d)
+  vim.api.nvim_set_current_buf(buf)
+  lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  row = under(lines, "- [ ] Buy milk @errand !p2 <2099-01-01>")
+  vim.api.nvim_win_set_cursor(0, { row + 1, 0 })
+  vim.cmd("move 1") -- up above "Above", without its notes
+  ops = ops_for(buf, st)
+  eq("a task moved without its description keeps it", kinds(ops), {})
+
+  d = fixture()
+  d.tasks[1].description = "code:\n  indented"
+  table.insert(d.tasks, task("t0", "Above", { child_order = 0 }))
+  buf, st = mount(d)
+  lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  row = under(lines, "- [ ] Buy milk @errand !p2 <2099-01-01>")
+  vim.api.nvim_buf_set_text(buf, row, 0, row, 0, { "  " }) -- >> on the task line alone
+  ops = ops_for(buf, st)
+  eq("indenting a task alone does not change its description", kinds(ops), { "move:t1" })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "  typed under Buy milk" })
+  ops = ops_for(buf, st)
+  eq("a line typed under a task is its description", #ops == 1 and ops[1].fields or ops, { description = "typed under Buy milk" })
 end
 
 --------------------------------------------------------------------- priority
