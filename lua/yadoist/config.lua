@@ -27,6 +27,9 @@ local defaults = {
   -- stale on screen after someone else changes something.
   refresh_on_focus = true,
 
+  -- How many days back the `completed` view looks.
+  completed_days = 7,
+
   -- Per-request timeout, in milliseconds.
   timeout = 15000,
 

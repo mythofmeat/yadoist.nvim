@@ -334,6 +334,53 @@ do
   check("and it too comes back drawn that way", lines(b)[3]:find("Bravo", 1, true) ~= nil, vim.inspect(lines(b)))
 end
 
+print("\nfilter, completed and quick add")
+do
+  local data = seed()
+  data.tasks[1].labels = { "errand" }
+  local query = "@errand & !#Work"
+  local b = fresh("filter " .. query, data)
+  server.filters[query] = function(item)
+    return vim.tbl_contains(item.labels or {}, "errand")
+  end
+  vim.cmd("edit") -- the filter is defined now; ask again
+  settled(b)
+  check("a filter view shows what Todoist's filter matched", vim.deep_equal(lines(b), { "# Inbox", "", "- [ ] Alpha @errand" }),
+    vim.inspect(lines(b)))
+  check("and the query reaches Todoist intact", server.log[#server.log].path:find("query=%40errand%20%26%20%21%23Work", 1, true) ~= nil,
+    server.log[#server.log].path)
+  vim.api.nvim_buf_set_lines(b, 3, 3, false, { "- [ ] Second errand @errand" })
+  vim.cmd("write")
+  settled(b)
+  check("a task added there is created in the heading's project", vim.deep_equal(server.take(), { "item_add" })
+    and vim.tbl_contains(lines(b), "- [ ] Second errand @errand"), vim.inspect(lines(b)))
+
+  b = fresh("filter nonsense ((")
+  vim.cmd("edit")
+  settled(b)
+  check("a filter Todoist rejects says so, and shows nothing", (notes[#notes] or ""):find("Invalid filter", 1, true) ~= nil
+    and vim.deep_equal(lines(b), { "# (nothing in filter nonsense (()" }), vim.inspect({ notes, lines(b) }))
+
+  data = seed()
+  data.tasks[2].checked, data.tasks[2].completed_at = true, "2026-10-21T08:00:00Z"
+  b = fresh("completed", data)
+  check("the completed view shows what was completed", vim.deep_equal(lines(b), { "# Inbox", "", "- [x] Bravo" }), vim.inspect(lines(b)))
+  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+  vim.cmd("write")
+  settled(b)
+  check("unticking one there reopens it", vim.deep_equal(server.take(), { "item_uncomplete" }) and server.data.items.b.checked == false)
+  check("and it leaves the view", not vim.tbl_contains(lines(b), "- [x] Bravo") and not vim.tbl_contains(lines(b), "- [ ] Bravo"),
+    vim.inspect(lines(b)))
+
+  b = fresh()
+  vim.cmd("Yadoist add Buy bread")
+  vim.wait(1000, function() return vim.tbl_contains(lines(b), "- [ ] Buy bread") end)
+  check(":Yadoist add adds a task through quick add", vim.deep_equal(server.take(), { "quick_add" })
+    and (notes[1] or ""):find('added "Buy bread" to Inbox', 1, true) ~= nil, vim.inspect(notes))
+  check("and open task buffers catch up", vim.tbl_contains(lines(b), "- [ ] Buy bread"), vim.inspect(lines(b)))
+end
+
 print("\nreporting")
 do
   local b = fresh()

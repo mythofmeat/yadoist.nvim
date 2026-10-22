@@ -110,6 +110,54 @@ local function set_text(bufnr, lines)
   vim.bo[bufnr].undolevels = levels
 end
 
+--- The tasks a view draws from: every open one, and for the completed view
+--- the ones completed lately, which the Sync read never returns.
+local function view_data(st)
+  local completed = st.extra and st.extra.completed
+  if not completed then
+    return st.data
+  end
+  local data, open = vim.tbl_extend("force", {}, st.data), {}
+  data.tasks = {}
+  for _, task in ipairs(st.data.tasks or {}) do
+    open[task.id] = true
+    table.insert(data.tasks, task)
+  end
+  for _, task in ipairs(completed) do
+    if not open[task.id] then
+      table.insert(data.tasks, task)
+    end
+  end
+  return data
+end
+
+--- What a view needs besides the tasks: the ids a filter matches, or the
+--- tasks completed lately.
+local function fetch_extra(view, cb)
+  if view.query then
+    api.filter(view.query, function(tasks, err)
+      if err then
+        return cb(nil, err)
+      end
+      local ids = {}
+      for _, task in ipairs(tasks) do
+        ids[task.id] = true
+      end
+      cb({ filter_ids = ids })
+    end)
+  elseif view.completed then
+    local now = model.now()
+    api.completed(now - config.options.completed_days * 86400, now, function(tasks, err)
+      if err then
+        return cb(nil, err)
+      end
+      cb({ completed = tasks })
+    end)
+  else
+    cb({})
+  end
+end
+
 function M.render(bufnr)
   local st = state[bufnr]
   if not st or not st.data then
@@ -122,9 +170,10 @@ function M.render(bufnr)
     cursor = vim.api.nvim_win_get_cursor(win)
   end
 
-  local lines, tasks, highlights, meta = render.build(st.data, {
+  local lines, tasks, highlights, meta = render.build(view_data(st), {
     projects = config.options.projects,
     view = st.view,
+    extra = st.extra,
   })
 
   set_text(bufnr, lines)
@@ -228,10 +277,14 @@ function M.refresh(bufnr, opts)
   -- it does after a BufReadCmd, so when it has moved the text decides.
   local tick = vim.api.nvim_buf_get_changedtick(bufnr)
   local text = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  store.read(function(data, err)
+  local view = views.get(st.view)
+  local function landed(data, extra, err)
     st.busy = false
     if err then
-      return notify(err, vim.log.levels.ERROR)
+      notify(err, vim.log.levels.ERROR)
+      if not data then
+        return
+      end
     end
     if state[bufnr] ~= st or not vim.api.nvim_buf_is_loaded(bufnr) then
       return -- reloaded or closed meanwhile
@@ -242,9 +295,8 @@ function M.refresh(bufnr, opts)
       -- away; what was fetched is kept, and shows on the next redraw.
       return
     end
-    st.data = data
+    st.data, st.extra = data, extra or st.extra or {}
     M.render(bufnr)
-    local view = views.get(st.view)
     if view.project and #views.find_projects(view.project, data.projects) == 0 then
       local close = views.suggest(view.project, data.projects)
       return notify(("no project called %q%s"):format(view.project,
@@ -257,6 +309,14 @@ function M.refresh(bufnr, opts)
       end
       notify(("%s: %d tasks"):format(view.label, shown))
     end
+  end
+  store.read(function(data, err)
+    if err then
+      return landed(nil, nil, err)
+    end
+    fetch_extra(view, function(extra, extra_err)
+      landed(data, extra, extra_err)
+    end)
   end)
 end
 
@@ -303,7 +363,7 @@ function M.compute(bufnr)
     orphans = orphans,
     heading_ids = st.heading_ids,
     known = st.known,
-    tasks = st.data and st.data.tasks or {},
+    tasks = st.data and view_data(st).tasks or {},
     project_ids = st.project_ids or {},
     section_ids = st.section_ids or {},
     by_date = st.by_date,
@@ -425,8 +485,20 @@ local function finish(bufnr, st, result)
   if #result.errors == 0 then
     -- The reply carried everything that changed, so draw from that.
     st.data = store.snapshot()
+    local view = views.get(st.view)
+    if st.extra and st.extra.filter_ids then
+      -- What was just added in a filter view stays in sight until the filter
+      -- is asked again, rather than vanishing as it is written.
+      for _, id in pairs(result.ids) do
+        st.extra.filter_ids[id] = true
+      end
+    end
     M.render(bufnr)
-    return notify(sync.describe(result.ops))
+    notify(sync.describe(result.ops))
+    if view.query or view.completed then
+      M.refresh(bufnr) -- what the filter matches, or what is completed, may have changed
+    end
+    return
   end
   fold(bufnr, st, result)
   local sent = vim.tbl_filter(function(op)
@@ -665,6 +737,9 @@ function M.open(name)
   if name and name:match("^project%s*$") then
     return notify("which project? — :Yadoist project <name>", vim.log.levels.ERROR)
   end
+  if name and name:match("^filter%s*$") then
+    return notify("which filter? — :Yadoist filter <query>, such as :Yadoist filter today & #Work", vim.log.levels.ERROR)
+  end
   local view, view_name = views.get(canonical(name))
   if not view then
     return notify(("no view called %q — try one of: %s"):format(
@@ -681,6 +756,27 @@ function M.open(name)
     M.refresh(bufnr)
   end
   return bufnr
+end
+
+--- Add a task through Todoist's own quick-add parser, without opening a
+--- buffer: "Call the plumber #House tomorrow p2".
+function M.quick_add(text)
+  api.quick_add(text, function(task, err)
+    if err then
+      return notify(err, vim.log.levels.ERROR)
+    end
+    local where = ""
+    for _, project in ipairs(store.snapshot().projects) do
+      if type(task) == "table" and project.id == task.project_id then
+        where = " to " .. model.one_line(project.name)
+      end
+    end
+    notify(("added %q%s"):format(type(task) == "table" and model.content(task) or text, where))
+    -- Open task buffers catch up; refresh() leaves any with unsaved edits alone.
+    for bufnr in pairs(state) do
+      M.refresh(bufnr)
+    end
+  end)
 end
 
 --- The task buffer to act on: the current one if it is a task buffer, else any

@@ -4,7 +4,14 @@ end
 vim.g.loaded_yadoist = true
 
 vim.api.nvim_create_user_command("Yadoist", function(cmd)
-  require("yadoist").open(cmd.args ~= "" and cmd.args or nil)
+  local args = vim.trim(cmd.args)
+  local text = args:match("^add%s+(.+)$")
+  if text then
+    return require("yadoist").add(text)
+  elseif args == "add" then
+    return vim.notify("yadoist: add what? — :Yadoist add Call the plumber #House tomorrow p2", vim.log.levels.ERROR)
+  end
+  require("yadoist").open(args ~= "" and args or nil)
 end, {
   nargs = "?",
   complete = function(lead, line)
@@ -23,11 +30,15 @@ end, {
       table.sort(out)
       return out
     end
+    if line:match("^%S*%s+%S+%s") then
+      return {} -- a filter query or a task to add: nothing to offer
+    end
     return vim.tbl_filter(function(name)
       return name:find(lead, 1, true) == 1
-    end, require("yadoist.views").names())
+    end, vim.list_extend(require("yadoist.views").names(), { "add" }))
   end,
-  desc = "Open your Todoist tasks as a buffer (all|today|upcoming|overdue|inbox|project <name>)",
+  desc = "Open your Todoist tasks as a buffer (all|today|upcoming|overdue|inbox|completed|project <name>|filter <query>), "
+    .. "or add one (add <text>)",
 })
 
 vim.api.nvim_create_user_command("YadoistRefresh", function()

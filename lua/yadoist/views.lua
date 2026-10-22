@@ -59,11 +59,23 @@ M.list = {
       return ctx.inbox_id ~= nil and task.project_id == ctx.inbox_id
     end,
   },
+  -- Todoist returns only open tasks, so these are fetched separately (see
+  -- buffer.lua). Unticking one reopens it.
+  completed = {
+    label = "recently completed",
+    description = "tasks completed in the last week, to reopen one ticked by mistake",
+    completed = true,
+    prune_empty = true,
+    matches = function(task)
+      return model.is_completed(task)
+    end,
+  },
 }
 
 --- Order they are offered in for completion and in the help text. `project`
---- takes a name after it, so it is built on demand rather than listed above.
-M.order = { "all", "today", "upcoming", "overdue", "inbox", "project" }
+--- and `filter` take something after them, so they are built on demand rather
+--- than listed above.
+M.order = { "all", "today", "upcoming", "overdue", "inbox", "completed", "project", "filter" }
 
 --- The project a `project <name>` (or `project/<name>`) view is for, or nil.
 function M.project_name(name)
@@ -84,11 +96,37 @@ local function project_view(project)
   }
 end
 
+--- The query a `filter <query>` (or `filter/<query>`) view is for, or nil.
+function M.filter_query(name)
+  local query = type(name) == "string" and name:match("^filter[/%s]+(.-)%s*$")
+  return query ~= "" and query or nil
+end
+
+--- The tasks a Todoist filter matches, such as `today & #Work` or `@errand`,
+--- with Todoist's whole filter language. Which ones match is asked of Todoist
+--- (see buffer.lua); like `overdue`, they are grouped by project, with their
+--- parents.
+local function filter_view(query)
+  return {
+    label = "filter " .. query,
+    description = "the tasks a Todoist filter matches",
+    query = query,
+    prune_empty = true,
+    matches = function(task, ctx)
+      return ctx.filter_ids ~= nil and ctx.filter_ids[task.id] == true
+    end,
+  }
+end
+
 function M.get(name)
   name = name or "all"
   local project = M.project_name(name)
   if project then
     return project_view(project), "project/" .. project
+  end
+  local query = M.filter_query(name)
+  if query then
+    return filter_view(query), "filter/" .. query
   end
   return M.list[name], name
 end
@@ -166,8 +204,9 @@ end
 --- ancestors so a subtask is never drawn without its parent; date views pull in
 --- its descendants instead, the way Todoist shows a task due today with all of
 --- its subtasks.
+---@param extra table|nil what a view fetched besides the tasks: filter_ids
 ---@return table<string, boolean>|nil  nil means "everything"
-function M.included(view, data)
+function M.included(view, data, extra)
   if not view.matches then
     return nil
   end
@@ -186,7 +225,7 @@ function M.included(view, data)
     end
   end
 
-  local ctx = { inbox_id = inbox_id, scope = M.scope(view, data) }
+  local ctx = { inbox_id = inbox_id, scope = M.scope(view, data), filter_ids = extra and extra.filter_ids }
   local included = {}
 
   local function descend(task)

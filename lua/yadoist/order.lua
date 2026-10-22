@@ -48,7 +48,8 @@ function M.compute(ctx)
   end
 
   -- Which list each line's task will be in once the write lands, and which
-  -- day, in a date view. A completed task has no place in either.
+  -- day, in a date view. A completed task has no place in either, and one
+  -- being reopened goes back to the place it had.
   local lists, list_keys, days, day_keys = {}, {}, {}, {}
   local function into(map, keys, key, e)
     if not map[key] then
@@ -58,7 +59,7 @@ function M.compute(ctx)
     table.insert(map[key], e)
   end
   for _, e in ipairs(ctx.entries) do
-    if not e.done then
+    if not e.done and not (e.task and model.is_completed(e.task)) then
       if e.parent_lnum then
         local parent = by_lnum[e.parent_lnum]
         into(lists, list_keys, "parent:" .. (parent.task and parent.task.id or ("line:" .. parent.lnum)), e)

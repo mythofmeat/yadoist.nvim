@@ -220,7 +220,8 @@ end
 
 --- Build the whole buffer.
 ---@param data table { projects, sections, tasks }
----@param opts table|nil { projects = string[], view = string }
+---@param opts table|nil { projects = string[], view = string, extra = table }
+---   extra: what the view fetched besides the tasks (see views.included)
 ---@return string[] lines, table[] tasks, table[] highlights, table meta
 ---   meta.notes { lnum, task_id, indent }[]: the task each description line
 ---   was drawn under, and the indent it was drawn with;
@@ -232,7 +233,7 @@ end
 function M.build(data, opts)
   opts = opts or {}
   local view = views.get(opts.view)
-  local included = views.included(view, data)
+  local included = views.included(view, data, opts.extra)
   local scope = views.scope(view, data)
 
   local allow
