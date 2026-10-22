@@ -1,0 +1,282 @@
+*yadoist.txt*  Your Todoist tasks as a buffer you edit like any other text
+
+==============================================================================
+CONTENTS                                                    *yadoist-contents*
+
+  1. Introduction ............................... |yadoist-intro|
+  2. Requirements and setup ..................... |yadoist-setup|
+  3. Commands ................................... |yadoist-commands|
+  4. Views ...................................... |yadoist-views|
+  5. Syntax ..................................... |yadoist-syntax|
+  6. Editing .................................... |yadoist-editing|
+  7. Writing .................................... |yadoist-writing|
+  8. Configuration .............................. |yadoist-config|
+  9. Highlights ................................. |yadoist-highlights|
+ 10. Limits ..................................... |yadoist-limits|
+
+==============================================================================
+1. INTRODUCTION                                     *yadoist* *yadoist-intro*
+
+Type a line to add a task, change a line to rename one, tick a box to
+complete one, delete a line to delete one, then |:w| sends it all to Todoist.
+>markdown
+    # Inbox
+
+    - [ ] Buy milk @errand !p2 <2026-09-24>
+    - [ ] Fix the leaky sink @house
+      - [ ] Get the wrench back from Dave
+
+    # House Chores
+
+    ## Kitchen
+
+    - [x] Wipe the counters @chores <every saturday>
+<
+There are no local files. Opening a buffer fetches from Todoist, and |:w|
+diffs what you typed against what was fetched and sends only what changed.
+Todoist stays the only source of truth, so nothing drifts and there are no
+conflicts to resolve; the trade is that it needs a network connection.
+
+==============================================================================
+2. REQUIREMENTS AND SETUP                                     *yadoist-setup*
+
+- Neovim 0.10 or later.
+- curl, on your PATH. 7.84 or later lets a rate limit's Retry-After be read.
+- A Todoist API token: Todoist → Settings → Integrations → Developer. Put it
+  in your environment as `TODOIST_API_TOKEN`, or pass it to |yadoist.setup()|.
+
+With lazy.nvim: >lua
+    { "you/yadoist.nvim", cmd = { "Yadoist", "YadoistRefresh" }, opts = {} }
+<
+|:checkhealth| yadoist checks all three.
+
+==============================================================================
+3. COMMANDS                                                *yadoist-commands*
+
+                                                                    *:Yadoist*
+:Yadoist [{view}]       Open a view of your tasks, `all` by default. See
+                        |yadoist-views|. Each view has its own buffer,
+                        `yadoist://{view}`, so unsaved edits in one survive
+                        switching to another.
+
+:Yadoist add {text}                                             *:Yadoist-add*
+                        Add a task without opening a buffer, through
+                        Todoist's own quick-add parser: >vim
+                            :Yadoist add Call the plumber #House tomorrow p2
+<                       Being Todoist's parser, it creates any @label it has
+                        not seen. Open task buffers catch up at once.
+
+                                                             *:YadoistRefresh*
+:YadoistRefresh         Fetch again and redraw the task buffer, asking first
+                        if that would throw away unsaved edits.
+
+|:e| fetches again too, and refuses while there are unsaved edits; |:e!|
+throws them away and fetches again.
+
+==============================================================================
+4. VIEWS                                                      *yadoist-views*
+
+  all                   every task, grouped by project
+  today                 overdue, then due today, grouped by day
+  upcoming              overdue, then each of the next seven days
+  overdue               past its due date and still open
+  inbox                 the Inbox project on its own
+  completed             completed in the last |yadoist-completed_days|
+  project {name}        one project and its subprojects
+  filter {query}        what a Todoist filter matches: `today & #Work`
+
+A view is only a filter: the syntax never changes, and every edit works the
+same in every view. Tasks a view hides are never taken for deleted ones.
+
+Project views ~
+`all`, `overdue`, `inbox`, `project`, `filter` and `completed` are grouped by
+project, in the order Todoist's sidebar has them; a nested project's heading
+says what it is nested in. A matching task always brings its parent along.
+`overdue`, `filter` and `completed` leave out projects with nothing in them;
+the others draw every project they cover, so there is a heading to add to.
+
+`project {name}` matches the name ignoring case, and may contain spaces. Names
+tab-complete once a task buffer has loaded.
+
+`filter {query}` asks Todoist which tasks its filter matches, in its whole
+filter language; `filter @errand` is a label view. A task added there goes to
+its heading's project and stays in sight until the view is next refreshed.
+
+`completed` shows recently completed tasks. Unticking one reopens it.
+
+Date views ~
+`today` and `upcoming` work like Todoist's own Today and Upcoming. Headings
+are days, every day is drawn even when empty, and `# Overdue` comes first when
+anything is. A task brings all its subtasks; a subtask due in its own right
+sits under its own day. The project is shown beside each line.
+
+- Moving a line under another day reschedules it, keeping its local time of
+  day. Recurring tasks refuse; edit their `<...>` instead.
+- A new line under a day goes to the Inbox, due that day unless it says.
+- A new subtask goes wherever its parent is.
+- Tasks never change project here, and `##` sections are not understood.
+
+A date view left open past midnight redraws its days when you come back to
+it, if nothing is unsaved; if something is, |:w| refuses.
+
+==============================================================================
+5. SYNTAX                                                    *yadoist-syntax*
+
+  # Name                a project (a day, in the date views)
+  ## Name               a section of the project above
+  - [ ] / - [x]         an open / completed task
+  two spaces of indent  a subtask of the line above
+  @errand               a label
+  @{waiting for}        a label whose name a bare @ cannot hold
+  !p1 ... !p4           priority, named as Todoist names them
+  <tomorrow>            a due date
+  indented text         the description of the task above
+
+Labels, priorities and dates are recognised only at the end of a line, so
+`email bob@example.com` keeps its @. Anything inside `<...>` goes to Todoist's
+own date parser, so `<friday at 5pm>` and `<every 2nd tuesday>` work. Removing
+the `<...>` clears the date. A one-off date is shown as the date it resolved
+to, `<2026-09-24>` or `<2026-09-24 15:00>`, in local time; a recurring one as
+its words, so it stays recurring.
+
+                                                             *yadoist-escape*
+A title that itself ends in something suffix-like is drawn with a backslash
+in front of it, `Style the \<div>`, and a description line that would read as
+a task likewise, `\- [ ] one`. Type them the same way. The backslash is not
+part of the text, and text that really has one there is drawn with another.
+
+Every untouched buffer reads back exactly as drawn, so |:w| with no edits
+sends nothing.
+
+==============================================================================
+6. EDITING                                                  *yadoist-editing*
+
+Keys, in the task buffer ~
+  <CR>          tick or untick the task under the cursor
+  gr            fetch again, asking first if there are unsaved edits
+  q             close the buffer
+
+In Insert mode, |i_CTRL-X_CTRL-O| completes @labels, and project and section
+names in headings. It is the buffer's 'omnifunc'. |zc| on a task folds it,
+its description and its subtasks.
+
+                                                           *yadoist-identity*
+Each task line carries an invisible mark holding its Todoist id, at the start
+of the line, so any edit within the line (`cc`, `S`, `:s`) keeps it, and so
+does moving it with `:m`. A line cut and pasted (`ddp`) loses its mark, but
+reads back as the task it was if its title is unchanged. A task whose line is
+gone is deleted, and |:w| asks first.
+
+Headings carry marks too, so two projects with the same name never mix: only
+a heading typed by hand is looked up by name, and if two projects answer to
+it, |:w| says so. Editing a heading yadoist drew renames that project or
+section, unless another one there has the name already.
+
+Description lines remember their task: deleting a task's line deletes its
+description with it, and moving a task's line without them leaves its
+description as it was.
+
+                                                              *yadoist-order*
+Moving lines saves their order: within a project, section or parent, and in
+`today` and `upcoming`, within a day. A view that shows part of a list leaves
+the tasks it hides where they were relative to the ones around them.
+
+Undo stops at the last time the buffer was drawn, as it does after |:e|.
+
+==============================================================================
+7. WRITING                                                  *yadoist-writing*
+
+|:w| sends everything in one request to Todoist's Sync API, which reads back
+what changed in the same request, so the buffer is redrawn from Todoist's
+answer. |:w| waits for it, so |:wq|, |:x| and |ZZ| quit once it lands, with
+the buffer read-only meanwhile. If Todoist is slow, the write goes on in the
+background and the buffer stays read-only until it lands.
+
+                                                            *yadoist-preview*
+Before a write that could surprise you, |:w| lists what it is about to send
+and asks: when it deletes a task (for everyone the project is shared with),
+renames a project or section, completes or deletes subtasks the view does not
+show, or moves tasks after a heading line was deleted. See |yadoist-confirm|.
+
+Each change carries an id Todoist applies at most once. A request with no
+answer, or a server error, is tried again after a pause; one that never hears
+back keeps its ids, so writing it again cannot apply anything twice. A rate
+limit is waited out when it asks for a short wait.
+
+If part of a write fails, the buffer is left as typed, with the reason on the
+line that failed, and what landed is not sent again.
+
+==============================================================================
+8. CONFIGURATION                                             *yadoist-config*
+
+                                                             *yadoist.setup()*
+These are the defaults: >lua
+    require("yadoist").setup({
+      token = function() return vim.env.TODOIST_API_TOKEN end,
+      confirm = true,
+      create_labels = false,
+      projects = nil,
+      refresh_on_focus = true,
+      completed_days = 7,
+      timeout = 15000,
+      keymaps = { toggle = "<CR>", refresh = "gr", close = "q" },
+    })
+<
+token                                                         *yadoist-token*
+        A string, or a function returning one.
+
+confirm                                                     *yadoist-confirm*
+        `true`: ask before a risky write (|yadoist-preview|). `"always"`: list
+        every write before sending it. `false`: never ask. The older
+        `confirm_delete = false` still means `false`.
+
+create_labels                                         *yadoist-create_labels*
+        Todoist creates any label it has not seen, so by default |:w| refuses
+        one that does not exist yet, rather than turning a typo into a label.
+
+projects                                                   *yadoist-projects*
+        Show only these projects, by name. `nil` shows them all.
+
+refresh_on_focus                                   *yadoist-refresh_on_focus*
+        Fetch again when the buffer is entered or Neovim regains focus. After
+        the first fetch only what changed is asked for, so it is cheap. It
+        never redraws over unsaved edits.
+
+completed_days                                       *yadoist-completed_days*
+        How many days back the `completed` view looks.
+
+timeout                                                     *yadoist-timeout*
+        Per-request timeout, in milliseconds.
+
+keymaps                                                     *yadoist-keymaps*
+        Buffer-local keys. Set one to `false` or `""` to leave it unmapped.
+
+==============================================================================
+9. HIGHLIGHTS                                            *yadoist-highlights*
+
+Each group links to a standard one, so the buffer follows your colourscheme.
+Override any of them:
+
+  YadoistProject YadoistSection YadoistCheckboxOpen YadoistCheckboxDone
+  YadoistContent YadoistContentDone YadoistLabel YadoistPriority1
+  YadoistPriority2 YadoistPriority3 YadoistDue YadoistDueToday
+  YadoistDueOverdue YadoistDescription YadoistDeadline YadoistAssignee
+  YadoistAnnotation
+
+Lines are coloured from their text as they are drawn, so a typed line looks
+like a fetched one. A date is coloured from the task data while the line still
+shows the date that was fetched, so `<every day>` shows as overdue when it
+is. Beside a line, as virtual text never read back, yadoist shows a task's
+deadline, who it is assigned to, and in date views where it lives.
+
+==============================================================================
+10. LIMITS                                                   *yadoist-limits*
+
+- It does not create projects or sections: a `#` heading that matches no
+  project is an error on that line.
+- It does not work offline; there is no local copy by design.
+- Completed tasks appear only in the `completed` view.
+- Archived projects and sections, and anything in them, are not shown.
+- A label whose name has both a space and a `}` in it cannot be written.
+
+ vim:tw=78:ts=8:ft=help:norl:

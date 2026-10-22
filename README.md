@@ -25,7 +25,8 @@ are no conflicts to resolve — the trade is that it needs a network connection.
 
 ## Install
 
-With lazy.nvim:
+Needs Neovim 0.10 or later, and curl (7.84 or later lets a rate limit's
+Retry-After be read). With lazy.nvim:
 
 ```lua
 { "you/yadoist.nvim", cmd = { "Yadoist", "YadoistRefresh" }, opts = {} }
@@ -39,7 +40,8 @@ export TODOIST_API_TOKEN="..."      # bash / zsh
 set -Ux TODOIST_API_TOKEN "..."     # fish, persists across sessions
 ```
 
-Run `:Yadoist`.
+Run `:Yadoist`. `:checkhealth yadoist` checks Neovim, curl and the token, and
+`:help yadoist` has everything below.
 
 ## Views
 
@@ -70,13 +72,13 @@ other. Tasks a view hides are never mistaken for deleted ones.
 ### Project views
 
 `all`, `overdue`, `inbox`, `project`, `filter` and `completed` are grouped by
-project, with `# Project`
-headings, in the order Todoist's sidebar has them: each project is followed by
-the ones nested in it, whose headings say what they are nested in. A matching
-task always brings its parent along, so a subtask is never shown without the
-task it belongs to. `overdue` leaves out projects with nothing in them, so use
-`all` or `project <name>` to add a task to an empty project; `inbox` always
-shows the Inbox, empty or not.
+project, with `# Project` headings, in the order Todoist's sidebar has them:
+each project is followed by the ones nested in it, whose headings say what
+they are nested in. A matching task always brings its parent along, so a
+subtask is never shown without the task it belongs to. `overdue`, `filter` and
+`completed` leave out projects with nothing in them, so use `all` or `project
+<name>` to add a task to an empty project; `inbox` always shows the Inbox,
+empty or not.
 
 `filter` takes Todoist's whole filter language and asks Todoist which tasks
 match; label views come with it (`filter @errand`). A task added in a filter
@@ -384,4 +386,5 @@ randomised test of it), every operation the diff can produce, including
 identity surviving real `cc`, `dd` and `ddp` keystrokes, and due dates in
 several time zones. `lifecycle.lua` drives real buffers against a fake Todoist
 (`tests/fake_todoist.lua`): opening, `:e`, undo, writing and `:wq`, edits made
-while a request is out, retries, lost replies, partial failures, and folding.
+while a request is out, retries, lost replies, partial failures, folding,
+completion and colour. CI runs both on Neovim 0.10, stable and nightly.
