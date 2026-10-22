@@ -3,10 +3,10 @@ package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
 
 local parse = require("yadoist.parse")
 local render = require("yadoist.render")
-local diff = require("yadoist.diff")
 local model = require("yadoist.model")
 local dapi = require("yadoist.api")
 local sync = require("yadoist.sync")
+local buffer = require("yadoist.buffer")
 
 local passed, failed = 0, 0
 
@@ -44,6 +44,11 @@ local function fixture()
       { id = "p2", name = "House Chores", child_order = 2 },
     },
     sections = { { id = "s1", project_id = "p2", name = "Kitchen", child_order = 1 } },
+    labels = {
+      { id = "l1", name = "errand" },
+      { id = "l2", name = "house" },
+      { id = "l3", name = "urgent" },
+    },
     tasks = {
       task("t1", "Buy milk", {
         labels = { "errand" }, priority = 3,
@@ -56,82 +61,19 @@ local function fixture()
   }
 end
 
---- Recreate what buffer.lua does: render into a real buffer with identity
---- extmarks, then hand back everything the diff needs.
-local ns = vim.api.nvim_create_namespace("yadoist_test_ids")
-
+--- Render into a real buffer through buffer.lua itself, identity marks and
+--- all, and hand back the state the diff works from.
 local function mount(data, opts)
-  local lines, tasks, _, meta = render.build(data, opts)
+  opts = opts or {}
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-
-  local st = { marks = {}, known = {}, project_ids = {}, section_ids = {} }
-  for _, entry in ipairs(tasks) do
-    local row = entry.lnum - 1
-    local mark = vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
-      end_row = row,
-      end_col = #lines[entry.lnum],
-      invalidate = true,
-    })
-    st.marks[mark] = entry.task
-    st.known[entry.task.id] = entry.task
-  end
-  for _, p in ipairs(data.projects) do
-    st.project_ids[p.name] = p.id
-  end
-  for _, s in ipairs(data.sections) do
-    st.section_ids[s.project_id] = st.section_ids[s.project_id] or {}
-    st.section_ids[s.project_id][s.name] = s.id
-  end
-  if meta.headings then
-    st.by_date = { headings = meta.headings, placed = meta.placed, overdue = render.OVERDUE }
-    for _, p in ipairs(data.projects) do
-      if model.is_inbox(p) then
-        st.by_date.inbox_id = p.id
-      end
-    end
-  end
-  return buf, st, lines
+  buffer._state[buf] = { view = opts.view or "all", data = data }
+  buffer.render(buf)
+  return buf, buffer._state[buf], vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 end
 
-local function resolvers(buf, st)
-  local live, dead, claimed = {}, {}, {}
-  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
-    local id, row, details = m[1], m[2], m[4]
-    local bucket = (details and details.invalid) and dead or live
-    bucket[row] = bucket[row] or {}
-    table.insert(bucket[row], id)
-  end
-  local function lookup(bucket)
-    return function(lnum)
-      for _, id in ipairs(bucket[lnum - 1] or {}) do
-        if not claimed[id] and st.marks[id] then
-          claimed[id] = true
-          return st.marks[id]
-        end
-      end
-      return nil
-    end
-  end
-  return lookup(live), lookup(dead)
-end
-
-local function ops_for(buf, st)
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local entries, errors = parse.buffer(lines)
-  if #errors > 0 then
-    return nil, errors
-  end
-  local resolve, resolve_stale = resolvers(buf, st)
-  return diff.compute({
-    entries = entries,
-    resolve = resolve,
-    resolve_stale = resolve_stale,
-    known = st.known,
-    project_ids = st.project_ids,
-    section_ids = st.section_ids,
-    by_date = st.by_date,
-  })
+--- What :w would send for the buffer as it now stands.
+local function ops_for(buf)
+  return buffer.compute(buf)
 end
 
 ------------------------------------------------------------- suffix splitting
@@ -194,8 +136,8 @@ do
 end
 
 do
-  -- Rewriting the whole line, the way `cc` does: the mark is invalidated, and
-  -- the dead mark left on that row is what keeps the task's identity.
+  -- Rewriting the whole line, the way `cc` does: the mark is zero-width, so
+  -- it survives as long as the line itself does.
   local buf, st, lines = mount(fixture())
   vim.api.nvim_buf_set_text(buf, 2, 0, 2, #lines[3], { "- [ ] Buy oat milk" })
   local ops = ops_for(buf, st)
@@ -266,6 +208,50 @@ do
   local ops = ops_for(buf, st)
   eq("un-indenting a subtask promotes it", #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
     { "move", "t3", { project_id = "p2" } })
+end
+
+do
+  -- A deleted line leaves a dead mark on the row below it. It must never be
+  -- read as belonging to whatever line now sits there.
+  local function kinds(ops)
+    return vim.tbl_map(function(o) return o.kind .. ":" .. tostring(o.id or o.content) end, ops or {})
+  end
+  local buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "- [ ] Call mom" }) -- new line under t1
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, {})                   -- dd on t1
+  eq("deleting a task above a new line is a delete, not a rename", kinds(ops_for(buf, st)),
+    { "create:Call mom", "delete:t1" })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "- [ ] Call mom" })
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, { "- [x] Buy milk @errand !p2 <2099-01-01>" })
+  eq("ticking a task above a new line closes it, not renames it", kinds(ops_for(buf, st)),
+    { "create:Call mom", "close:t1" })
+
+  buf, st = mount(fixture())
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "- [ ] Call mom" })
+  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+  vim.cmd("normal! ddp") -- move Buy milk below the new line
+  eq("moving a task below a new line with ddp keeps both", kinds(ops_for(buf, st)), { "create:Call mom" })
+
+  for _, keys in ipairs({ "S- [ ] Buy oat milk\27", "0D", ":s/milk/oat milk/\r" }) do
+    buf, st = mount(fixture())
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    vim.api.nvim_feedkeys(keys, "x", false)
+    local ops = ops_for(buf, st)
+    local want = keys == "0D" and { "delete:t1" } or { "update:t1" }
+    eq(("%q keeps or drops the task as it should"):format(keys), kinds(ops), want)
+  end
+
+  buf, st = mount(fixture())
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+  require("yadoist.buffer")._toggle(buf)
+  eq("<CR> ticks the task in place", kinds(ops_for(buf, st)), { "close:t1" })
+  eq("and leaves its mark where it was",
+    #vim.api.nvim_buf_get_extmarks(buf, buffer._ns_ids, { 2, 0 }, { 2, -1 }, {}), 1)
 end
 
 do
@@ -703,13 +689,7 @@ do
     local buf, st = mount(fixture())
     st.label_names = { errand = true, house = true, shared = true }
     vim.api.nvim_buf_set_lines(buf, 2, 3, false, { line })
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local entries = parse.buffer(lines)
-    local resolve, resolve_stale = resolvers(buf, st)
-    return diff.compute({
-      entries = entries, resolve = resolve, resolve_stale = resolve_stale, known = st.known,
-      project_ids = st.project_ids, section_ids = st.section_ids, label_names = st.label_names,
-    })
+    return ops_for(buf, st)
   end
 
   local ops, errors = labelled("- [ ] Buy milk @erand !p2 <2099-01-01>")
@@ -724,12 +704,7 @@ do
   -- t1 already carries @errand even though it is not in the list: a shared
   -- project's label, say. Leaving it alone must not be an error.
   vim.api.nvim_buf_set_text(buf, 2, 6, 2, 14, { "Buy oat milk" })
-  local entries = parse.buffer(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-  local resolve, resolve_stale = resolvers(buf, st)
-  ops, errors = diff.compute({
-    entries = entries, resolve = resolve, resolve_stale = resolve_stale, known = st.known,
-    project_ids = st.project_ids, section_ids = st.section_ids, label_names = st.label_names,
-  })
+  ops, errors = ops_for(buf, st)
   check("a label the task already had is kept", #errors == 0 and #ops == 1, vim.inspect(errors))
 end
 
