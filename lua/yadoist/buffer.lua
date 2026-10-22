@@ -49,11 +49,12 @@ local function report(bufnr, errors)
   notify("nothing was sent to Todoist — " .. summary, vim.log.levels.ERROR)
 end
 
---- Map buffer lines back to the tasks they were rendered from, using the
---- extmarks rather than line numbers so reordering is free. Only live marks
---- count: a mark dies only when its line is deleted, so a dead one says
---- nothing about the line that now sits where it was.
-local function resolver(bufnr, st)
+--- Map buffer lines back to the tasks and headings they were rendered from,
+--- using the extmarks rather than line numbers so reordering is free. Only
+--- live marks count: a mark dies only when its line is deleted, so a dead one
+--- says nothing about the line that now sits where it was.
+---@return fun(lnum: integer): table|nil task, fun(lnum: integer): table|nil heading
+local function resolvers(bufnr, st)
   local rows, claimed = {}, {}
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns_ids, 0, -1, { details = true })) do
     local id, row, details = mark[1], mark[2], mark[4]
@@ -63,7 +64,7 @@ local function resolver(bufnr, st)
     end
   end
 
-  return function(lnum)
+  local function task(lnum)
     for _, id in ipairs(rows[lnum - 1] or {}) do
       if not claimed[id] and st.marks[id] then
         claimed[id] = true
@@ -72,6 +73,17 @@ local function resolver(bufnr, st)
     end
     return nil
   end
+
+  local function heading(lnum)
+    for _, id in ipairs(rows[lnum - 1] or {}) do
+      if st.headings[id] then
+        return st.headings[id]
+      end
+    end
+    return nil
+  end
+
+  return task, heading
 end
 
 function M.render(bufnr)
@@ -99,11 +111,16 @@ function M.render(bufnr)
 
   -- Zero-width, so editing anything within a line (cc, S, :s) keeps its mark,
   -- and only deleting the line itself invalidates it.
-  st.marks, st.known = {}, {}
+  local function mark(lnum)
+    return vim.api.nvim_buf_set_extmark(bufnr, ns_ids, lnum - 1, 0, { invalidate = true })
+  end
+  st.marks, st.known, st.headings, st.heading_ids = {}, {}, {}, meta.heading_ids or {}
   for _, entry in ipairs(tasks) do
-    local mark = vim.api.nvim_buf_set_extmark(bufnr, ns_ids, entry.lnum - 1, 0, { invalidate = true })
-    st.marks[mark] = entry.task
+    st.marks[mark(entry.lnum)] = entry.task
     st.known[entry.task.id] = entry.task
+  end
+  for _, heading in ipairs(st.heading_ids) do
+    st.headings[mark(heading.lnum)] = heading
   end
 
   for _, h in ipairs(highlights) do
@@ -134,9 +151,18 @@ function M.render(bufnr)
     end
   end
 
+  -- Every live project and section by name, as lists: Todoist lets two share
+  -- a name, and a heading typed by hand cannot say which of them it means.
   st.project_ids, st.section_ids, st.by_date = {}, {}, nil
+  local function add(map, name, id)
+    name = model.one_line(name)
+    map[name] = map[name] or {}
+    table.insert(map[name], id)
+  end
   for _, project in ipairs(st.data.projects or {}) do
-    st.project_ids[project.name] = project.id
+    if project.is_deleted ~= true and project.is_archived ~= true then
+      add(st.project_ids, project.name, project.id)
+    end
   end
   st.drawn_on = model.today()
   if meta.headings then
@@ -148,8 +174,10 @@ function M.render(bufnr)
     end
   end
   for _, section in ipairs(st.data.sections or {}) do
-    st.section_ids[section.project_id] = st.section_ids[section.project_id] or {}
-    st.section_ids[section.project_id][section.name] = section.id
+    if section.is_deleted ~= true and section.is_archived ~= true then
+      st.section_ids[section.project_id] = st.section_ids[section.project_id] or {}
+      add(st.section_ids[section.project_id], section.name, section.id)
+    end
   end
 
   vim.bo[bufnr].modified = false
@@ -194,17 +222,21 @@ function M.refresh(bufnr, opts)
 end
 
 --- Parse the buffer and work out what :w would send.
----@return table[] ops, table[] errors
+---@return table[] ops, table[] errors, table info
 function M.compute(bufnr)
   local st = state[bufnr]
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local entries, errors = parse.buffer(lines)
+  local entries, errors, headings = parse.buffer(lines)
   if #errors > 0 then
-    return {}, errors
+    return {}, errors, {}
   end
+  local task, heading = resolvers(bufnr, st)
   return diff.compute({
     entries = entries,
-    resolve = resolver(bufnr, st),
+    headings = headings,
+    resolve = task,
+    heading = heading,
+    heading_ids = st.heading_ids,
     known = st.known,
     project_ids = st.project_ids or {},
     section_ids = st.section_ids or {},
@@ -399,7 +431,7 @@ function M.open(name)
     vim.bo[bufnr].bufhidden = "hide"
     vim.bo[bufnr].filetype = "yadoist"
     vim.b[bufnr].yadoist_view = view_name
-    state[bufnr] = { marks = {}, known = {}, view = view_name }
+    state[bufnr] = { marks = {}, known = {}, headings = {}, heading_ids = {}, view = view_name }
     attach(bufnr)
   end
 

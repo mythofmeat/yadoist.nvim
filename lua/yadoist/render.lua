@@ -4,6 +4,7 @@
 -- be driven by the data: an overdue date is coloured differently from a future
 -- one because we know the date, not because of how it is spelled.
 local model = require("yadoist.model")
+local parse = require("yadoist.parse")
 local views = require("yadoist.views")
 
 local M = {}
@@ -21,14 +22,16 @@ function M.task_line(task, depth)
   line = line .. "- [" .. (done and "x" or " ") .. "] "
   table.insert(spans, { done and "YadoistCheckboxDone" or "YadoistCheckboxOpen", at, #line })
 
+  -- Escaped, so a title that ends like a suffix ("Style the <div>") is not
+  -- read back as one.
   at = #line
-  line = line .. task.content
+  line = line .. parse.escape(model.content(task))
   table.insert(spans, { done and "YadoistContentDone" or "YadoistContent", at, #line })
 
   for _, label in ipairs(model.labels(task)) do
     line = line .. " "
     at = #line
-    line = line .. "@" .. label
+    line = line .. parse.label_token(label)
     table.insert(spans, { "YadoistLabel", at, #line })
   end
 
@@ -62,7 +65,8 @@ function M.task_line(task, depth)
 end
 
 --- The lines drawn under a task for its description, indented one level past
---- the task so they fold with it. A blank line in it stays blank.
+--- the task so they fold with it. A blank line in it stays blank, and a line
+--- that would read as a task is escaped.
 function M.description_lines(task, depth)
   local d = model.description(task)
   if d == "" then
@@ -70,7 +74,7 @@ function M.description_lines(task, depth)
   end
   local indent, out = string.rep("  ", depth + 1), {}
   for _, line in ipairs(vim.split(d, "\n", { plain = true })) do
-    table.insert(out, line:match("^%s*$") and "" or (indent .. line))
+    table.insert(out, line:match("^%s*$") and "" or (indent .. parse.escape_description(line)))
   end
   return out
 end
@@ -241,7 +245,9 @@ end
 ---@param data table { projects, sections, tasks }
 ---@param opts table|nil { projects = string[], view = string }
 ---@return string[] lines, table[] tasks, table[] highlights, table meta
----   meta, for date views only: headings { [text] = date|"Overdue" },
+---   meta, for project views: heading_ids { lnum, kind, id, project_id?, name }[],
+---   the project or section each heading line was drawn for.
+---   For date views: headings { [text] = date|"Overdue" },
 ---   placed { [task_id] = the heading key it was drawn under },
 ---   annotations { lnum, text }[] to show beside a line
 function M.build(data, opts)
@@ -324,6 +330,9 @@ function M.build(data, opts)
   end)
 
   local lines, tasks, highlights = {}, {}, {}
+  -- Which project or section each heading was drawn for, so a heading is
+  -- known by identity rather than by its name, which two can share.
+  local heading_ids = {}
 
   local function push(text)
     table.insert(lines, text)
@@ -387,7 +396,9 @@ function M.build(data, opts)
       if #lines > 0 then
         push("")
       end
-      local lnum = push("# " .. project.name)
+      local name = model.one_line(project.name)
+      local lnum = push("# " .. name)
+      table.insert(heading_ids, { lnum = lnum, kind = "project", id = project.id, name = name })
       table.insert(highlights, { lnum = lnum, group = "YadoistProject", from = 0, to = #lines[lnum] })
       push("")
       emit_group(project.id, nil)
@@ -397,7 +408,9 @@ function M.build(data, opts)
       for _, section in ipairs(list) do
         if not (view.prune_empty and not group(project.id, section.id)) then
           push("")
-          local slnum = push("## " .. section.name)
+          local sname = model.one_line(section.name)
+          local slnum = push("## " .. sname)
+          table.insert(heading_ids, { lnum = slnum, kind = "section", id = section.id, project_id = project.id, name = sname })
           table.insert(highlights, { lnum = slnum, group = "YadoistSection", from = 0, to = #lines[slnum] })
           push("")
           emit_group(project.id, section.id)
@@ -413,7 +426,7 @@ function M.build(data, opts)
     lines = { ("# (nothing in %s)"):format(view.label) }
   end
 
-  return lines, tasks, highlights, {}
+  return lines, tasks, highlights, { heading_ids = heading_ids }
 end
 
 return M

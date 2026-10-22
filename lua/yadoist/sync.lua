@@ -77,7 +77,9 @@ local function commands_for(ops)
   end
 
   for _, op in ipairs(ops) do
-    if op.kind == "create" then
+    if op.kind == "rename" then
+      add(op, op.target == "project" and "project_update" or "section_update", { id = op.id, name = op.name })
+    elseif op.kind == "create" then
       local tmp = temp_id(op.lnum)
       add(op, "item_add", {
         content = op.content,
@@ -215,9 +217,9 @@ M._commands_for = commands_for
 
 --- One-line summary of what a write is about to do, for the message area.
 function M.describe(ops)
-  local counts, order = {}, { "create", "update", "move", "close", "reopen", "delete" }
+  local counts, order = {}, { "rename", "create", "update", "move", "close", "reopen", "delete" }
   local words = {
-    create = "added", update = "updated", move = "moved",
+    rename = "renamed", create = "added", update = "updated", move = "moved",
     close = "completed", reopen = "reopened", delete = "deleted",
   }
   for _, op in ipairs(ops) do
