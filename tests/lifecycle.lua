@@ -312,6 +312,28 @@ do
   check("so :w works after it", vim.deep_equal(server.take(), { "item_update" }), vim.inspect(notes))
 end
 
+print("\norder")
+do
+  local b = fresh()
+  vim.api.nvim_win_set_cursor(0, { 4, 0 })
+  vim.cmd("move 2") -- Bravo above Alpha
+  vim.cmd("write")
+  check("a list's new order is saved", vim.deep_equal(server.take(), { "item_reorder" }))
+  check("and comes back drawn that way", vim.deep_equal({ lines(b)[3], lines(b)[4] }, { "- [ ] Bravo", "- [ ] Alpha" }),
+    vim.inspect(lines(b)))
+
+  local today = require("yadoist.model").today()
+  local data = seed()
+  data.tasks[1].due = { date = today, string = "today" }
+  data.tasks[2].due = { date = today, string = "today" }
+  b = fresh("today", data)
+  vim.api.nvim_win_set_cursor(0, { 4, 0 })
+  vim.cmd("move 2")
+  vim.cmd("write")
+  check("so is a day's", vim.deep_equal(server.take(), { "item_update_day_orders" }))
+  check("and it too comes back drawn that way", lines(b)[3]:find("Bravo", 1, true) ~= nil, vim.inspect(lines(b)))
+end
+
 print("\nreporting")
 do
   local b = fresh()

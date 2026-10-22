@@ -7,6 +7,7 @@
 -- missing (a line cut and pasted elsewhere). Anything left over is a genuine
 -- deletion — which is what the confirmation prompt is for.
 local model = require("yadoist.model")
+local order = require("yadoist.order")
 local parse = require("yadoist.parse")
 
 local M = {}
@@ -200,6 +201,8 @@ end
 ---   orphans      description lines with no task above them, as
 ---                { lnum, line }, each one drawn under some task
 ---   known        { [task_id] = task } -- everything we rendered
+---   tasks        every task fetched, rendered or not: what a list holds
+---                besides what this view shows
 ---   project_ids  { [name] = id[] }, every live project by name
 ---   section_ids  { [project_id] = { [name] = id[] } }
 ---   label_names  { [name] = true } labels that already exist, or nil to let
@@ -476,7 +479,27 @@ function M.compute(ctx)
     end
   end
 
-  -- 8. Deletions last, so a failed write leaves the data intact.
+  -- 8. The order lines are in, now that it is known what moves where.
+  local moving, leaving = {}, {}
+  for _, op in ipairs(ops) do
+    if op.kind == "move" then
+      moving[op.id] = true
+    elseif op.kind == "close" then
+      leaving[op.id] = true
+    end
+  end
+  for _, task in ipairs(still_deleting) do
+    leaving[task.id] = true
+  end
+  vim.list_extend(ops, order.compute({
+    entries = entries,
+    moving = moving,
+    leaving = leaving,
+    tasks = ctx.tasks,
+    by_date = ctx.by_date,
+  }))
+
+  -- 9. Deletions last, so a failed write leaves the data intact.
   for _, task in ipairs(still_deleting) do
     table.insert(ops, { kind = "delete", id = task.id, content = task.content })
   end

@@ -85,6 +85,14 @@ local function ops_for(buf)
   return buffer.compute(buf)
 end
 
+--- The ops other than new orders, for tests about something else: a line
+--- typed or moved into a list also saves where it was put.
+local function changes(ops)
+  return vim.tbl_filter(function(o)
+    return o.kind ~= "reorder" and o.kind ~= "day_order"
+  end, ops or {})
+end
+
 ------------------------------------------------------------- suffix splitting
 print("\nsplit_suffixes")
 do
@@ -398,7 +406,7 @@ do
   -- Move "Buy milk" from Inbox into House Chores.
   vim.api.nvim_buf_set_lines(buf, 2, 3, false, {})
   vim.api.nvim_buf_set_lines(buf, 5, 5, false, { "- [ ] Buy milk @errand !p2 <2099-01-01>" })
-  local ops = ops_for(buf, st)
+  local ops = changes(ops_for(buf, st))
   eq("dragging a task to another project is a move",
     #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
     { "move", "t1", { project_id = "p2" } })
@@ -407,7 +415,7 @@ end
 do
   local buf, st = mount(fixture())
   vim.api.nvim_buf_set_lines(buf, 7, 8, false, { "- [ ] Get the wrench back from Dave" })
-  local ops = ops_for(buf, st)
+  local ops = changes(ops_for(buf, st))
   eq("un-indenting a subtask promotes it", #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
     { "move", "t3", { project_id = "p2" } })
 end
@@ -435,7 +443,8 @@ do
   vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "- [ ] Call mom" })
   vim.api.nvim_win_set_cursor(0, { 3, 0 })
   vim.cmd("normal! ddp") -- move Buy milk below the new line
-  eq("moving a task below a new line with ddp keeps both", kinds(ops_for(buf, st)), { "create:Call mom" })
+  eq("moving a task below a new line with ddp keeps both, in their new order", kinds(ops_for(buf, st)),
+    { "create:Call mom", "reorder:Inbox" })
 
   for _, keys in ipairs({ "S- [ ] Buy oat milk\27", "0D", ":s/milk/oat milk/\r" }) do
     buf, st = mount(fixture())
@@ -684,7 +693,7 @@ do
 
   buf, st = mount(fixture())
   vim.api.nvim_buf_set_lines(buf, 2, 2, false, { "- [ ] New thing", "  with notes" })
-  ops = ops_for(buf, st)
+  ops = changes(ops_for(buf, st))
   eq("a new task carries its description",
     #ops == 1 and { ops[1].kind, ops[1].description } or ops, { "create", "with notes" })
   local cmd = sync._commands_for(ops)[1].command
@@ -700,7 +709,7 @@ do
 
   buf, st = mount(fixture())
   vim.api.nvim_buf_set_lines(buf, 2, 2, false, { "- [ ] Parent", "  notes", "", "  - [ ] Child" })
-  ops = ops_for(buf, st)
+  ops = changes(ops_for(buf, st))
   eq("a gap before a subtask is not part of the parent's description",
     #ops == 2 and { ops[1].description, ops[2].description } or ops, { "notes", nil })
 
@@ -771,7 +780,7 @@ do
   local from = vim.fn.index(cur, "- [ ] Tomorrow's task <" .. tomorrow .. ">")
   vim.api.nvim_buf_set_lines(buf, from, from + 1, false, {})
   vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <" .. tomorrow .. ">" })
-  ops = ops_for(buf, st)
+  ops = changes(ops_for(buf, st))
   eq("moving a line to another day reschedules it",
     #ops == 1 and { ops[1].kind, ops[1].id, ops[1].fields } or ops,
     { "update", "f5", { due_date = today } })
@@ -783,7 +792,7 @@ do
   from = vim.fn.index(cur, "- [ ] Tomorrow's task <" .. tomorrow .. " 15:00>")
   vim.api.nvim_buf_set_lines(buf, from, from + 1, false, {})
   vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] Tomorrow's task <" .. tomorrow .. " 15:00>" })
-  ops = ops_for(buf, st)
+  ops = changes(ops_for(buf, st))
   eq("rescheduling a timed task keeps its time",
     #ops == 1 and ops[1].fields or ops, { due_datetime = today .. "T15:00:00" })
 
@@ -798,7 +807,7 @@ do
 
   buf, st = mount(family(), { view = "today" })
   vim.api.nvim_buf_set_lines(buf, 8, 8, false, { "    - [ ] New grandchild" })
-  ops = ops_for(buf, st)
+  ops = changes(ops_for(buf, st))
   check("a new subtask in a date view follows its parent",
     #ops == 1 and ops[1].kind == "create" and ops[1].parent_id == "f2"
       and ops[1].project_id == nil and ops[1].due_date == nil, vim.inspect(ops))
@@ -952,7 +961,7 @@ do
   vim.api.nvim_win_set_cursor(0, { row + 1, 0 })
   vim.cmd("move 1") -- up above "Above", without its notes
   ops = ops_for(buf, st)
-  eq("a task moved without its description keeps it", kinds(ops), {})
+  eq("a task moved without its description keeps it", kinds(ops), { "reorder:Inbox" })
 
   d = fixture()
   d.tasks[1].description = "code:\n  indented"
@@ -961,13 +970,105 @@ do
   lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   row = under(lines, "- [ ] Buy milk @errand !p2 <2099-01-01>")
   vim.api.nvim_buf_set_text(buf, row, 0, row, 0, { "  " }) -- >> on the task line alone
-  ops = ops_for(buf, st)
+  ops = changes(ops_for(buf, st))
   eq("indenting a task alone does not change its description", kinds(ops), { "move:t1" })
 
   buf, st = mount(fixture())
   vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "  typed under Buy milk" })
   ops = ops_for(buf, st)
   eq("a line typed under a task is its description", #ops == 1 and ops[1].fields or ops, { description = "typed under Buy milk" })
+end
+
+print("\nsaving the order")
+do
+  local function abc()
+    return {
+      projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 }, { id = "p2", name = "Work", child_order = 1 } },
+      sections = {},
+      tasks = {
+        task("a", "A", { child_order = 1 }), task("b", "B", { child_order = 2 }), task("c", "C", { child_order = 3 }),
+        task("w", "W", { project_id = "p2", child_order = 1 }),
+      },
+    }
+  end
+  local function orders(ops)
+    return vim.tbl_map(function(o)
+      if o.kind == "reorder" then
+        return vim.tbl_map(function(i) return (i.id or ("line " .. i.lnum)) .. "=" .. i.child_order end, o.items)
+      elseif o.kind == "day_order" then
+        return o.ids
+      end
+      return o.kind
+    end, ops)
+  end
+
+  local buf, st = mount(abc())
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_win_set_cursor(0, { 5, 0 })
+  vim.cmd("move 2") -- C to the top
+  eq(":move within a list saves the new order", orders(ops_for(buf, st)), { { "c=1", "a=2", "b=3" } })
+
+  buf, st = mount(abc())
+  vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "- [ ] New" })
+  eq("a new line between two others is put there", orders(ops_for(buf, st)), { "create", { "a=1", "line 4=2", "b=3", "c=4" } })
+
+  buf, st = mount(abc())
+  vim.api.nvim_buf_set_lines(buf, 5, 5, false, { "- [ ] New" })
+  eq("one at the end needs no order, since that is where Todoist adds it", orders(ops_for(buf, st)), { "create" })
+
+  buf, st = mount(abc())
+  vim.api.nvim_buf_set_lines(buf, 2, 3, false, {})
+  vim.api.nvim_buf_set_lines(buf, 6, 6, false, { "- [ ] A" })
+  eq("a task moved into a list is put where it was dropped", orders(ops_for(buf, st)), { "move", { "a=1", "w=2" } })
+
+  -- In a filtered view a list may be only partly shown. K2 is not overdue,
+  -- so overdue shows only K1 and K3 under their parent.
+  local today = model.today()
+  local yesterday = model.date_after(-1)
+  local data = {
+    projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 } },
+    sections = {},
+    tasks = {
+      task("p", "Parent"),
+      task("k1", "K1", { parent_id = "p", child_order = 1, due = { date = yesterday, string = "x" } }),
+      task("k2", "K2", { parent_id = "p", child_order = 2 }),
+      task("k3", "K3", { parent_id = "p", child_order = 3, due = { date = yesterday, string = "x" } }),
+    },
+  }
+  buf, st = mount(data, { view = "overdue" })
+  eq("(overdue shows part of the list)", vim.api.nvim_buf_get_lines(buf, 0, -1, false),
+    { "# Inbox", "", "- [ ] Parent", "  - [ ] K1 <" .. yesterday .. ">", "  - [ ] K3 <" .. yesterday .. ">" })
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_win_set_cursor(0, { 5, 0 })
+  vim.cmd("move 3")
+  eq("a task the view hides keeps its place after the one before it", orders(ops_for(buf, st)), { { "k3=1", "k1=2", "k2=3" } })
+
+  -- Date views save the order within a day.
+  data = {
+    projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 0 } },
+    sections = {},
+    tasks = {
+      task("d1", "First", { child_order = 1, due = { date = today, string = "x" } }),
+      task("d2", "Second", { child_order = 2, due = { date = today, string = "x" } }),
+    },
+  }
+  buf, st = mount(data, { view = "today" })
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_win_set_cursor(0, { 4, 0 })
+  vim.cmd("move 2")
+  eq("moving a line within a day saves the day's order", orders(ops_for(buf, st)), { { "d2", "d1" } })
+
+  eq("orders are sent as item_reorder and item_update_day_orders",
+    vim.tbl_map(function(c) return { c.command.type, c.command.args } end, sync._commands_for({
+      { kind = "reorder", items = { { id = "a", child_order = 1 }, { lnum = 7, child_order = 2 } } },
+      { kind = "day_order", ids = { "d2", "d1" } },
+    })),
+    {
+      { "item_reorder", { items = { { id = "a", child_order = 1 }, { id = "yadoist-line-7", child_order = 2 } } } },
+      { "item_update_day_orders", { ids_to_orders = { d2 = 1, d1 = 2 } } },
+    })
+  eq("and counted as lists and days", sync.describe({ { kind = "reorder" }, { kind = "reorder" }, { kind = "day_order" } }),
+    "2 lists reordered, 1 day reordered")
 end
 
 --------------------------------------------------------------------- priority

@@ -185,6 +185,17 @@ line deletes its description with it, even though the lines stay on screen
 until the next refresh, rather than adding them to the task above; and moving a
 task's line without its description leaves its description unchanged.
 
+### Order
+
+Lines are in Todoist's order, and moving them — `:m`, `ddp`, a visual block
+cut and put — saves the new order of the list you moved them within or into:
+a project's or section's tasks, or a task's subtasks. A new line is put where
+you typed it. In `today` and `upcoming`, moving lines within a day saves that
+day's order, the one Todoist's own Today and Upcoming use.
+
+A view that shows only part of a list, as `overdue` does, leaves the tasks it
+hides where they were relative to the ones around them.
+
 ### Recurring tasks
 
 Recurring tasks are the exception to showing the date: the buffer shows
