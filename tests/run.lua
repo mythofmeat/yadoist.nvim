@@ -974,9 +974,6 @@ do
   eq("a one-off date shows as the date", shown({ string = "tomorrow", date = "2026-09-24" }), "2026-09-24")
   eq("a timed one adds the time", shown({ string = "26 Sep 3:00 PM", date = "2026-09-26T15:00:00" }),
     "2026-09-26 15:00")
-  local utc = os.time({ year = 2026, month = 9, day = 26, hour = 15 }) + (os.time() - os.time(os.date("!*t")))
-  eq("a fixed-timezone time is shown in local time", shown({ string = "3pm", date = "2026-09-26T15:00:00Z" }),
-    os.date("%Y-%m-%d %H:%M", utc))
   eq("a recurring date keeps its words",
     shown({ string = "every saturday", date = "2026-09-26", is_recurring = true }), "every saturday")
 
@@ -985,6 +982,87 @@ do
   local ops = ops_for(buf, st)
   eq("typing words in the <...> still sends them to Todoist's parser",
     #ops == 1 and ops[1].fields or ops, { due_string = "friday" })
+end
+
+------------------------------------------------------------------ time zones
+print("\ntime zones")
+do
+  -- os.date reads the zone through the C library, which only looks at $TZ
+  -- again after tzset(), so each zone below is really in force.
+  local ffi = require("ffi")
+  pcall(ffi.cdef, "void tzset(void);")
+  local function in_zone(tz, fn)
+    local saved = vim.env.TZ
+    vim.env.TZ = tz
+    ffi.C.tzset()
+    local ok, err = pcall(fn)
+    vim.env.TZ = saved
+    ffi.C.tzset()
+    if not ok then
+      error(err, 0)
+    end
+  end
+  local real_now = model.now
+  local function at(y, m, d, h, mi)
+    return function() return model.utc_time(y, m, d, h, mi, 0) end
+  end
+
+  -- 2026-10-22T22:00:00Z, as each zone sees it. Sydney is in daylight saving
+  -- (UTC+11) by then; New York still is too (UTC-4).
+  local want = {
+    ["Australia/Sydney"] = { "2026-10-23 09:00", "2026-10-23" },
+    ["America/New_York"] = { "2026-10-22 18:00", "2026-10-22" },
+    ["UTC"] = { "2026-10-22 22:00", "2026-10-22" },
+    ["Asia/Kolkata"] = { "2026-10-23 03:30", "2026-10-23" },
+  }
+  for tz, w in pairs(want) do
+    in_zone(tz, function()
+      local fixed = { due = { date = "2026-10-22T22:00:00Z", timezone = "Australia/Sydney", string = "x" } }
+      eq(tz .. ": a fixed-timezone time is shown in local time", model.due_string(fixed), w[1])
+      eq(tz .. ": and filed under its local day", model.due_date(fixed), w[2])
+    end)
+  end
+
+  in_zone("Australia/Sydney", function()
+    local winter = { due = { date = "2026-06-15T00:00:00Z", string = "x" } }
+    local summer = { due = { date = "2026-12-15T00:00:00Z", string = "x" } }
+    eq("standard time is UTC+10", model.due_string(winter), "2026-06-15 10:00")
+    eq("daylight saving is UTC+11", model.due_string(summer), "2026-12-15 11:00")
+
+    local nine = { due = { date = "2026-10-22T22:00:00Z", timezone = "Australia/Sydney", string = "x" } }
+    eq("rescheduling a fixed-timezone task keeps its local time",
+      model.reschedule(nine, "2026-10-25"), { due_datetime = "2026-10-24T22:00:00Z", due_timezone = "Australia/Sydney" })
+    local before_dst_ends = { due = { date = "2027-04-02T22:00:00Z", timezone = "Australia/Sydney", string = "x" } }
+    eq("even across the end of daylight saving",
+      model.reschedule(before_dst_ends, "2027-04-05"), { due_datetime = "2027-04-04T23:00:00Z", due_timezone = "Australia/Sydney" })
+    eq("a floating time is kept as written",
+      model.reschedule({ due = { date = "2026-10-23T09:00:00" } }, "2026-10-25"), { due_datetime = "2026-10-25T09:00:00" })
+
+    -- Noon on Oct 22 in Sydney. A task due at 08:00 tomorrow there is 21:00
+    -- today in UTC, which is where it used to be filed.
+    model.now = at(2026, 10, 22, 1, 0)
+    local data = {
+      projects = { { id = "p1", name = "Inbox", inbox_project = true, child_order = 1 } },
+      sections = {},
+      tasks = { task("z1", "Early tomorrow", { due = { date = "2026-10-22T21:00:00Z", timezone = "Australia/Sydney", string = "x" } }) },
+    }
+    eq("today is the local day", model.today(), "2026-10-22")
+    eq("a task due early tomorrow is not in today", render.build(data, { view = "today" }), { "# Oct 22 · Today · Thursday" })
+    local upcoming = render.build(data, { view = "upcoming" })
+    eq("it is filed under tomorrow", { upcoming[4], upcoming[6] },
+      { "# Oct 23 · Tomorrow · Friday", "- [ ] Early tomorrow <2026-10-23 08:00>" })
+
+    local buf, st = mount(data, { view = "upcoming" })
+    local ops = ops_for(buf, st)
+    check("and an untouched view of it sends nothing", #ops == 0, vim.inspect(ops))
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_win_set_cursor(0, { 6, 0 })
+    vim.cmd("move 1") -- under today's heading
+    ops = ops_for(buf, st)
+    eq("moving it to today keeps 08:00 local", #ops == 1 and ops[1].fields or ops,
+      { due_datetime = "2026-10-21T21:00:00Z", due_timezone = "Australia/Sydney" })
+    model.now = real_now
+  end)
 end
 
 ------------------------------------------------------------------ curl config

@@ -171,13 +171,7 @@ local function resolve_by_date(by_date, e)
     if model.is_recurring(e.task) then
       return "moving a recurring task to another day would make it a one-off — edit its <...> instead"
     end
-    local time = e.task.due.date:sub(11)
-    if time ~= "" then
-      -- A timed task keeps its time of day on the new date.
-      e.reschedule = { due_datetime = key .. time }
-    else
-      e.reschedule = { due_date = key }
-    end
+    e.reschedule = model.reschedule(e.task, key)
   elseif not e.parent_lnum then
     e.project_id = by_date.inbox_id
     if not e.project_id then

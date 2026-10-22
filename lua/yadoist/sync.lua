@@ -57,14 +57,15 @@ local function temp_id(lnum)
 end
 
 --- The diff speaks in REST-style field names; the Sync API wants a `due`
---- object instead, and null to clear it.
+--- object instead, and null to clear it. A fixed-timezone time is sent in UTC
+--- with the zone it is fixed to.
 local function due_of(fields)
   if fields.due_string == "no date" then
     return vim.NIL
   elseif fields.due_string then
     return { string = fields.due_string }
   elseif fields.due_datetime or fields.due_date then
-    return { date = fields.due_datetime or fields.due_date }
+    return { date = fields.due_datetime or fields.due_date, timezone = fields.due_timezone }
   end
   return nil
 end
