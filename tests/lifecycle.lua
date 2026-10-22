@@ -448,6 +448,17 @@ do
   check("a deadline is shown beside its line", texts[4] == "deadline 2099-02-01", vim.inspect(texts))
 end
 
+print("\nhealth")
+do
+  vim.cmd("silent checkhealth yadoist")
+  local report = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+  check(":checkhealth yadoist checks Neovim, curl and the token",
+    report:find("OK Neovim", 1, true) ~= nil and report:find("curl", 1, true) ~= nil
+      and report:find("OK a Todoist API token is set", 1, true) ~= nil, report)
+  check("and never shows the token", not report:find("test-token", 1, true), report)
+  vim.cmd("silent! bwipeout!")
+end
+
 print("\nreporting")
 do
   local b = fresh()
