@@ -81,7 +81,7 @@ end
 local function mount(data, opts)
   opts = opts or {}
   local buf = vim.api.nvim_create_buf(false, true)
-  buffer._state[buf] = { view = opts.view or "all", data = data }
+  buffer._state[buf] = { view = opts.view or "all", data = data, extra = opts.extra }
   buffer.render(buf)
   return buf, buffer._state[buf], vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 end
@@ -256,9 +256,10 @@ end
 
 do
   -- The property every item above is a case of: whatever Todoist holds, an
-  -- untouched buffer sends nothing. Random titles, descriptions, labels and
-  -- names, built from the pieces most likely to be misread. Set
-  -- YADOIST_FUZZ_ROUNDS and YADOIST_FUZZ_SEED to look harder.
+  -- untouched buffer sends nothing, in whichever view. Random titles,
+  -- descriptions, labels, names, dates and orders, built from the pieces most
+  -- likely to be misread. Set YADOIST_FUZZ_ROUNDS and YADOIST_FUZZ_SEED to
+  -- look harder.
   local rounds = tonumber(vim.env.YADOIST_FUZZ_ROUNDS) or 300
   math.randomseed(tonumber(vim.env.YADOIST_FUZZ_SEED) or 20261022)
   local function pick(list)
@@ -284,9 +285,17 @@ do
   end
   local labels = { "errand", "waiting for", "a@b", "{x", "x}", "p1", "<x>", "!p2", "é", "two  spaces", "back\\slash" }
   local names = { "Inbox", "Work", "Work", "# Hashed", "## Two", "  padded  ", "multi\nline", "Kitchen", "Kitchen" }
+  local function day(n)
+    return model.date_after(n)
+  end
   local dues = {
     false, { string = "tomorrow", date = "2099-01-02" }, { string = "x", date = "2099-01-02T15:00:00" },
     { string = "every day", date = "2099-01-02", is_recurring = true },
+    { string = "x", date = day(-1) }, { string = "x", date = day(0) }, { string = "x", date = day(1) },
+    { string = "x", date = day(3) }, { string = "x", date = day(10) }, { string = "x", date = day(0) .. "T09:30:00" },
+    { string = "x", date = day(1) .. "T23:00:00Z", timezone = "Australia/Sydney" },
+    { string = "x", date = day(-2) .. "T03:00:00Z", timezone = "America/New_York" },
+    { string = "every monday", date = day(-3), is_recurring = true },
   }
 
   local failures = {}
@@ -327,13 +336,47 @@ do
       end
       table.insert(data.tasks, t)
     end
+    for _, t in ipairs(data.tasks) do
+      t.day_order = math.random() < 0.3 and math.random(-1, 3) or nil
+    end
+
+    -- A view to look at it through.
+    local opts = { view = pick({ "all", "today", "upcoming", "overdue", "inbox", "project", "filter", "completed" }) }
+    if opts.view == "project" then
+      local project = pick(data.projects)
+      opts.view = project.name:find("\n") and "all" or ("project/" .. vim.trim(project.name))
+    elseif opts.view == "filter" then
+      local ids = {}
+      for _, t in ipairs(data.tasks) do
+        ids[t.id] = math.random() < 0.4 or nil
+      end
+      opts.view, opts.extra = "filter/q", { filter_ids = ids }
+    elseif opts.view == "completed" then
+      -- Tasks with nothing under them, completed lately, come separately.
+      local parents, open, done = {}, {}, {}
+      for _, t in ipairs(data.tasks) do
+        if t.parent_id then
+          parents[t.parent_id] = true
+        end
+      end
+      for _, t in ipairs(data.tasks) do
+        if not parents[t.id] and math.random() < 0.4 then
+          t.completed_at = "2026-10-21T08:00:00Z"
+          table.insert(done, t)
+        else
+          table.insert(open, t)
+        end
+      end
+      data.tasks, opts.extra = open, { completed = done }
+    end
+
     local ok, ops, errors = pcall(function()
-      local buf, st = mount(data)
+      local buf, st = mount(data, opts)
       return ops_for(buf, st)
     end)
     if not ok or #ops > 0 or #errors > 0 then
-      table.insert(failures, { round = round, err = not ok and ops or nil, ops = ok and ops or nil, errors = ok and errors or nil,
-        lines = render.build(data) })
+      table.insert(failures, { round = round, view = opts.view, err = not ok and ops or nil, ops = ok and ops or nil,
+        errors = ok and errors or nil, lines = ok and render.build(data, opts) or nil })
     end
   end
   check(rounds .. " random buffers round-trip without sending anything", #failures == 0,
