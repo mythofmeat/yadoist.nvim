@@ -49,11 +49,13 @@ local function report(bufnr, errors)
   notify("nothing was sent to Todoist — " .. summary, vim.log.levels.ERROR)
 end
 
---- Map buffer lines back to the tasks and headings they were rendered from,
---- using the extmarks rather than line numbers so reordering is free. Only
---- live marks count: a mark dies only when its line is deleted, so a dead one
---- says nothing about the line that now sits where it was.
----@return fun(lnum: integer): table|nil task, fun(lnum: integer): table|nil heading
+--- Map buffer lines back to the tasks, headings and descriptions they were
+--- rendered from, using the extmarks rather than line numbers so reordering
+--- is free. Only live marks count: a mark dies only when its line is deleted,
+--- so a dead one says nothing about the line that now sits where it was.
+---@return fun(lnum: integer): table|nil task
+---@return fun(lnum: integer): table|nil heading
+---@return fun(lnum: integer): table|nil owner
 local function resolvers(bufnr, st)
   local rows, claimed = {}, {}
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns_ids, 0, -1, { details = true })) do
@@ -74,16 +76,18 @@ local function resolvers(bufnr, st)
     return nil
   end
 
-  local function heading(lnum)
-    for _, id in ipairs(rows[lnum - 1] or {}) do
-      if st.headings[id] then
-        return st.headings[id]
+  local function find(map)
+    return function(lnum)
+      for _, id in ipairs(rows[lnum - 1] or {}) do
+        if map[id] then
+          return map[id]
+        end
       end
+      return nil
     end
-    return nil
   end
 
-  return task, heading
+  return task, find(st.headings), find(st.owners)
 end
 
 function M.render(bufnr)
@@ -114,13 +118,16 @@ function M.render(bufnr)
   local function mark(lnum)
     return vim.api.nvim_buf_set_extmark(bufnr, ns_ids, lnum - 1, 0, { invalidate = true })
   end
-  st.marks, st.known, st.headings, st.heading_ids = {}, {}, {}, meta.heading_ids or {}
+  st.marks, st.known, st.headings, st.heading_ids, st.owners = {}, {}, {}, meta.heading_ids or {}, {}
   for _, entry in ipairs(tasks) do
     st.marks[mark(entry.lnum)] = entry.task
     st.known[entry.task.id] = entry.task
   end
   for _, heading in ipairs(st.heading_ids) do
     st.headings[mark(heading.lnum)] = heading
+  end
+  for _, note in ipairs(meta.notes or {}) do
+    st.owners[mark(note.lnum)] = { id = note.task_id, indent = note.indent }
   end
 
   for _, h in ipairs(highlights) do
@@ -227,15 +234,30 @@ function M.compute(bufnr)
   local st = state[bufnr]
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local entries, errors, headings = parse.buffer(lines)
-  if #errors > 0 then
-    return {}, errors, {}
+  local task, heading, owner = resolvers(bufnr, st)
+
+  -- A description line with no task above it is an error, unless it was
+  -- drawn under a task: then its task's line was deleted or moved away, and
+  -- the line goes wherever that task went.
+  local orphans, rest = {}, {}
+  for _, err in ipairs(errors) do
+    if err.orphan and owner(err.lnum) then
+      table.insert(orphans, { lnum = err.lnum, line = lines[err.lnum] })
+    else
+      table.insert(rest, err)
+    end
   end
-  local task, heading = resolvers(bufnr, st)
+  if #rest > 0 then
+    return {}, rest, {}
+  end
+
   return diff.compute({
     entries = entries,
     headings = headings,
     resolve = task,
     heading = heading,
+    owner = owner,
+    orphans = orphans,
     heading_ids = st.heading_ids,
     known = st.known,
     project_ids = st.project_ids or {},
@@ -431,7 +453,7 @@ function M.open(name)
     vim.bo[bufnr].bufhidden = "hide"
     vim.bo[bufnr].filetype = "yadoist"
     vim.b[bufnr].yadoist_view = view_name
-    state[bufnr] = { marks = {}, known = {}, headings = {}, heading_ids = {}, view = view_name }
+    state[bufnr] = { marks = {}, known = {}, headings = {}, heading_ids = {}, owners = {}, view = view_name }
     attach(bufnr)
   end
 

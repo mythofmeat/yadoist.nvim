@@ -23,8 +23,11 @@ function M.is_completed(task)
   return task.completed_at ~= nil or task.checked == true or task.is_completed == true
 end
 
-function M.order(task)
-  return tonumber(task.child_order) or tonumber(task.order) or 0
+--- Position among siblings: child_order for tasks and projects, section_order
+--- for sections (v1 does not set their child_order), or the plain order older
+--- responses used.
+function M.order(x)
+  return tonumber(x.child_order) or tonumber(x.section_order) or tonumber(x.order) or 0
 end
 
 --- Seconds since the epoch for a UTC calendar time. os.time() reads its table

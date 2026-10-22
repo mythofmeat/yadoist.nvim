@@ -169,7 +169,7 @@ local function build_by_date(data, view, present, project_names)
   end
 
   local lines, tasks, highlights = {}, {}, {}
-  local meta = { headings = {}, placed = {}, annotations = {} }
+  local meta = { headings = {}, placed = {}, annotations = {}, notes = {} }
 
   local function push(text)
     table.insert(lines, text)
@@ -186,15 +186,16 @@ local function build_by_date(data, view, present, project_names)
     end
     for _, line in ipairs(M.description_lines(task, depth)) do
       local dlnum = push(line)
+      table.insert(meta.notes, { lnum = dlnum, task_id = task.id, indent = (depth + 1) * 2 })
       table.insert(highlights, { lnum = dlnum, group = "YadoistDescription", from = 0, to = #line })
     end
     if depth == 0 then
       -- Where the task lives, since the headings no longer say. Virtual text,
       -- so it is never read back as part of the task.
-      local where = project_names[task.project_id] or "?"
+      local where = model.one_line(project_names[task.project_id] or "?")
       local parent = task.parent_id and by_id[task.parent_id] or nil
       if parent then
-        where = where .. " › " .. tostring(parent.content)
+        where = where .. " › " .. model.content(parent)
       end
       table.insert(meta.annotations, { lnum = lnum, text = where })
     end
@@ -245,11 +246,13 @@ end
 ---@param data table { projects, sections, tasks }
 ---@param opts table|nil { projects = string[], view = string }
 ---@return string[] lines, table[] tasks, table[] highlights, table meta
----   meta, for project views: heading_ids { lnum, kind, id, project_id?, name }[],
+---   meta.notes { lnum, task_id, indent }[]: the task each description line
+---   was drawn under, and the indent it was drawn with;
+---   meta.annotations { lnum, text }[]: text to show beside a line.
+---   For project views, heading_ids { lnum, kind, id, project_id?, name }[]:
 ---   the project or section each heading line was drawn for.
----   For date views: headings { [text] = date|"Overdue" },
----   placed { [task_id] = the heading key it was drawn under },
----   annotations { lnum, text }[] to show beside a line
+---   For date views, headings { [text] = date|"Overdue" } and
+---   placed { [task_id] = the heading key it was drawn under }.
 function M.build(data, opts)
   opts = opts or {}
   local view = views.get(opts.view)
@@ -266,7 +269,9 @@ function M.build(data, opts)
 
   -- Only live projects and sections are drawn, and only the tasks that belong
   -- to them. Rendering a task whose section is archived would show it at the
-  -- top level, which the diff would then read as a deliberate move.
+  -- top level, which the diff would then read as a deliberate move. This is
+  -- also all that keeps a deleted project's tasks off screen: Todoist goes on
+  -- returning them, not marked deleted, for minutes after the project goes.
   local live_projects, live_sections = {}, {}
 
   local sections = {}
@@ -321,18 +326,51 @@ function M.build(data, opts)
       table.insert(roots[key], task)
     end
   end
-  table.sort(projects, function(a, b)
-    local ia, ib = model.is_inbox(a), model.is_inbox(b)
-    if ia ~= ib then
-      return ia
+  -- Projects in the order Todoist's sidebar shows them: the Inbox, then each
+  -- project followed by the ones nested under it. child_order only places a
+  -- project among its siblings, so sorting the flat list by it would mix
+  -- them up. A nested project's heading says which it is nested in.
+  local by_project, nested, top = {}, {}, {}
+  for _, project in ipairs(projects) do
+    by_project[project.id] = project
+  end
+  for _, project in ipairs(projects) do
+    if project.parent_id and by_project[project.parent_id] then
+      nested[project.parent_id] = nested[project.parent_id] or {}
+      table.insert(nested[project.parent_id], project)
+    else
+      table.insert(top, project)
     end
-    return by_order(a, b)
-  end)
+  end
+  local sidebar, inside = {}, {}
+  local function walk(list, path)
+    table.sort(list, function(a, b)
+      local ia, ib = model.is_inbox(a), model.is_inbox(b)
+      if ia ~= ib then
+        return ia
+      end
+      return by_order(a, b)
+    end)
+    for _, project in ipairs(list) do
+      if inside[project.id] == nil then
+        inside[project.id] = path or false
+        table.insert(sidebar, project)
+        local name = model.one_line(project.name)
+        walk(nested[project.id] or {}, path and (path .. " › " .. name) or name)
+      end
+    end
+  end
+  walk(top, nil)
+  for _, project in ipairs(projects) do
+    walk({ project }, nil) -- anything in a cycle of parents, which never reaches the top
+  end
 
   local lines, tasks, highlights = {}, {}, {}
   -- Which project or section each heading was drawn for, so a heading is
   -- known by identity rather than by its name, which two can share.
   local heading_ids = {}
+  -- Which task each description line was drawn under, and at what indent.
+  local notes, annotations = {}, {}
 
   local function push(text)
     table.insert(lines, text)
@@ -352,6 +390,7 @@ function M.build(data, opts)
     end
     for _, line in ipairs(M.description_lines(task, depth)) do
       local dlnum = push(line)
+      table.insert(notes, { lnum = dlnum, task_id = task.id, indent = (depth + 1) * 2 })
       table.insert(highlights, { lnum = dlnum, group = "YadoistDescription", from = 0, to = #line })
     end
     local kids = children[task.id]
@@ -386,7 +425,7 @@ function M.build(data, opts)
     return false
   end
 
-  for _, project in ipairs(projects) do
+  for _, project in ipairs(sidebar) do
     -- A project view draws every project it covers, empty or not, so there is
     -- always a heading to add a task under, and nothing else.
     local skip = (allow and not allow[project.name])
@@ -400,6 +439,9 @@ function M.build(data, opts)
       local lnum = push("# " .. name)
       table.insert(heading_ids, { lnum = lnum, kind = "project", id = project.id, name = name })
       table.insert(highlights, { lnum = lnum, group = "YadoistProject", from = 0, to = #lines[lnum] })
+      if inside[project.id] then
+        table.insert(annotations, { lnum = lnum, text = "in " .. inside[project.id] })
+      end
       push("")
       emit_group(project.id, nil)
 
@@ -426,7 +468,7 @@ function M.build(data, opts)
     lines = { ("# (nothing in %s)"):format(view.label) }
   end
 
-  return lines, tasks, highlights, { heading_ids = heading_ids }
+  return lines, tasks, highlights, { heading_ids = heading_ids, notes = notes, annotations = annotations }
 end
 
 return M

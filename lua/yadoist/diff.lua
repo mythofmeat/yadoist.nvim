@@ -7,6 +7,7 @@
 -- missing (a line cut and pasted elsewhere). Anything left over is a genuine
 -- deletion — which is what the confirmation prompt is for.
 local model = require("yadoist.model")
+local parse = require("yadoist.parse")
 
 local M = {}
 
@@ -194,6 +195,10 @@ end
 ---   heading      fun(lnum): table|nil -- what the heading on that line was
 ---                drawn for, from its live mark: { kind, id, project_id?, name }
 ---   heading_ids  every { kind, id, project_id?, name } that was drawn
+---   owner        fun(lnum): table|nil -- for a description line, the task it
+---                was drawn under and the indent it was drawn with: { id, indent }
+---   orphans      description lines with no task above them, as
+---                { lnum, line }, each one drawn under some task
 ---   known        { [task_id] = task } -- everything we rendered
 ---   project_ids  { [name] = id[] }, every live project by name
 ---   section_ids  { [project_id] = { [name] = id[] } }
@@ -271,7 +276,51 @@ function M.compute(ctx)
     end
   end
 
-  -- 4. Resolve each line's project, section and parent.
+  -- 4. A description line belongs to the task it was drawn under, wherever
+  --    that task's line has gone. Deleting a task's line leaves its
+  --    description under the task above, but it is not that task's; it goes
+  --    with its own task, and with it if it was deleted. Its text is read at
+  --    the indent it was drawn with, so re-indenting the task alone does not
+  --    change it. Lines typed or pasted in belong to the task above them.
+  if ctx.owner then
+    local home, items = {}, {}
+    for _, e in ipairs(entries) do
+      if e.task then
+        home[e.task.id] = e
+      end
+    end
+    local function file(e, item)
+      items[e] = items[e] or {}
+      table.insert(items[e], item)
+    end
+    local function place(item, under)
+      local drawn = ctx.owner(item.lnum)
+      if not drawn then
+        if under then
+          file(under, item)
+        end
+      elseif home[drawn.id] then
+        file(home[drawn.id], { lnum = item.lnum, line = item.line, text = parse.description_text(item.line, drawn.indent) })
+      end
+    end
+    for _, e in ipairs(entries) do
+      for _, item in ipairs(e.lines) do
+        place(item, e)
+      end
+    end
+    for _, item in ipairs(ctx.orphans or {}) do
+      place(item, nil)
+    end
+    for _, e in ipairs(entries) do
+      e.lines = items[e] or {}
+      table.sort(e.lines, function(a, b)
+        return a.lnum < b.lnum
+      end)
+      e.description = parse.join_description(e.lines)
+    end
+  end
+
+  -- 5. Resolve each line's project, section and parent.
   local by_lnum = {}
   for _, e in ipairs(entries) do
     by_lnum[e.lnum] = e
@@ -320,7 +369,7 @@ function M.compute(ctx)
     return {}, errors, info
   end
 
-  -- 5. Creates, in buffer order so parents land before their children.
+  -- 6. Creates, in buffer order so parents land before their children.
   for _, e in ipairs(still_creating) do
     table.insert(ops, {
       kind = "create",
@@ -339,7 +388,7 @@ function M.compute(ctx)
     })
   end
 
-  -- 6. Field updates and moves on tasks we already knew about.
+  -- 7. Field updates and moves on tasks we already knew about.
   for _, e in ipairs(entries) do
     local task = e.task
     if task then
@@ -423,7 +472,7 @@ function M.compute(ctx)
     end
   end
 
-  -- 7. Deletions last, so a failed write leaves the data intact.
+  -- 8. Deletions last, so a failed write leaves the data intact.
   for _, task in ipairs(still_deleting) do
     table.insert(ops, { kind = "delete", id = task.id, content = task.content })
   end

@@ -49,10 +49,12 @@ M.list = {
       return due ~= nil and due < today()
     end,
   },
+  -- Scoped like a project view rather than pruned, so an empty Inbox still
+  -- has its heading to add a task under.
   inbox = {
     label = "inbox",
     description = "the Inbox project on its own",
-    prune_empty = true,
+    inbox = true,
     matches = function(task, ctx)
       return ctx.inbox_id ~= nil and task.project_id == ctx.inbox_id
     end,
@@ -109,9 +111,17 @@ end
 
 --- Which project ids a project view covers: the named project and every
 --- project nested under it, the way Todoist's own project view includes its
---- subprojects.
+--- subprojects. The inbox view covers the Inbox.
 ---@return table<string, boolean>|nil  nil for views not tied to a project
 function M.scope(view, data)
+  if view.inbox then
+    for _, project in ipairs(data.projects or {}) do
+      if model.is_inbox(project) then
+        return { [project.id] = true }
+      end
+    end
+    return {}
+  end
   if not view.project then
     return nil
   end

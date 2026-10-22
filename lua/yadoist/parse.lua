@@ -7,7 +7,7 @@ local TASK = "^(%s*)%- %[([ xX])%]%s*(.*)$"
 local HEADING = "^(#+)%s+(.*)$"
 -- Indented text that is not a task: a line of the description of the task
 -- above it.
-local DESCRIPTION = "^(%s+)(%S.*)$"
+local DESCRIPTION = "^%s+(%S.*)$"
 
 --- Where a token that could be peeled off the end of `text` would start: the
 --- < of a due date, the ! of a priority, the @ of a label. Each kind can start
@@ -91,6 +91,13 @@ local function unescape_description(line)
   return line
 end
 
+--- The text of a description line, given the indent it was drawn with: what
+--- follows that indent, tabs included, is the text's own.
+function M.description_text(line, indent)
+  local lead, rest = line:match("^(%s*)(.*)$")
+  return unescape_description(lead:sub(indent + 1) .. rest)
+end
+
 --- Peel the trailing @label / !pN / <due> tokens off a task's text, and say
 --- where each one was.
 ---
@@ -168,7 +175,7 @@ end
 --- Each entry is one task line. Besides what the line says, it records the
 --- lines of the heading it sits under (project_lnum, section_lnum), so the
 --- diff can tell which project those headings were drawn for, and its
---- description lines with their line numbers.
+--- description lines as { lnum, text, line }.
 ---@param lines string[]
 ---@return table[] entries, table[] errors, table[] headings  { lnum, level, name }
 function M.buffer(lines)
@@ -182,10 +189,7 @@ function M.buffer(lines)
 
   for lnum, line in ipairs(lines) do
     local hashes, name = line:match(HEADING)
-    local indent, described = nil, nil
-    if not line:match(TASK) then
-      indent, described = line:match(DESCRIPTION)
-    end
+    local described = not line:match(TASK) and line:match(DESCRIPTION)
 
     if line:match("^%s*$") then
       table.insert(held, lnum)
@@ -193,15 +197,14 @@ function M.buffer(lines)
       if last then
         if #last.lines > 0 then
           for _, blank in ipairs(held) do
-            table.insert(last.lines, { lnum = blank, text = "" })
+            table.insert(last.lines, { lnum = blank, text = "", line = lines[blank] })
           end
         end
-        -- The indent it is drawn with is the buffer's; whatever follows that,
-        -- tabs included, is the text's own.
-        local own = indent:sub((last.depth + 1) * 2 + 1)
-        table.insert(last.lines, { lnum = lnum, text = unescape_description(own .. described) })
+        table.insert(last.lines, { lnum = lnum, text = M.description_text(line, (last.depth + 1) * 2), line = line })
       else
-        table.insert(errors, { lnum = lnum, msg = "description has no task above it" })
+        -- Flagged, because it may be the description of a task whose own
+        -- line was deleted, which the caller can tell from its marks.
+        table.insert(errors, { lnum = lnum, msg = "description has no task above it", orphan = true })
       end
     elseif hashes then
       last = nil
