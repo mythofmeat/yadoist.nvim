@@ -388,3 +388,15 @@ several time zones. `lifecycle.lua` drives real buffers against a fake Todoist
 (`tests/fake_todoist.lua`): opening, `:e`, undo, writing and `:wq`, edits made
 while a request is out, retries, lost replies, partial failures, folding,
 completion and colour. CI runs both on Neovim 0.10, stable and nightly.
+
+`tests/live.lua` runs against the real API, with your token, and only when
+asked:
+
+```sh
+YADOIST_LIVE=1 nvim --headless -u NONE -i NONE -l tests/live.lua
+```
+
+It first draws every view from your account and checks that `:w` would send
+nothing, without writing. Then it writes, but only in two throwaway projects
+it makes and deletes again, behind a guard that refuses any request naming
+anything else.

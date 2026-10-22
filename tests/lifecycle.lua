@@ -148,7 +148,11 @@ do
   check("q then :Yadoist gives a working buffer", vim.bo[b].filetype == "yadoist" and vim.bo[b].buftype == "acwrite"
     and vim.tbl_contains(maps, "gr") and vim.tbl_contains(lines(b), "- [ ] Alpha"),
     ("filetype=%q buftype=%q maps=%s"):format(vim.bo[b].filetype, vim.bo[b].buftype, vim.inspect(maps)))
-  check("and asks only for what changed", server.log[#server.log].body.sync_token ~= "*")
+  check("opening reads everything afresh", server.log[#server.log].body.sync_token == "*")
+  vim.api.nvim_exec_autocmds("FocusGained", { buffer = b })
+  settled(b)
+  check("while a refresh on focus asks only for what changed", server.log[#server.log].body.sync_token ~= "*",
+    server.log[#server.log].body.sync_token)
 
   server.edit("items", "a", { content = "Alpha, renamed elsewhere" })
   vim.cmd("edit")
@@ -337,7 +341,18 @@ do
   vim.cmd("move 2")
   vim.cmd("write")
   check("so is a day's", vim.deep_equal(server.take(), { "item_update_day_orders" }))
-  check("and it too comes back drawn that way", lines(b)[3]:find("Bravo", 1, true) ~= nil, vim.inspect(lines(b)))
+  check("and it too comes back drawn that way, though Todoist does not report it",
+    lines(b)[3]:find("Bravo", 1, true) ~= nil, vim.inspect(lines(b)))
+
+  -- A day reordered in another app: Todoist reports that only to a full read.
+  b = fresh("today", data)
+  server.data.items.b.day_order, server.data.items.a.day_order = 1, 2
+  vim.api.nvim_exec_autocmds("FocusGained", { buffer = b })
+  settled(b)
+  check("(a refresh on focus cannot see it)", lines(b)[3]:find("Alpha", 1, true) ~= nil, vim.inspect(lines(b)))
+  vim.cmd("edit")
+  settled(b)
+  check(":e reads everything, and sees it", lines(b)[3]:find("Bravo", 1, true) ~= nil, vim.inspect(lines(b)))
 end
 
 print("\nfilter, completed and quick add")
