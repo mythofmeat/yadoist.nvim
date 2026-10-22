@@ -6,47 +6,10 @@
 -- Each command carries a uuid, and Todoist applies a uuid at most once, which
 -- is what makes it safe to resend a request whose reply never arrived. Each
 -- request also reads back what changed (see store.lua), so a write brings its
--- own refresh.
-local config = require("yadoist.config")
+-- own refresh. Whether to send at all is decided before this (preview.lua).
 local store = require("yadoist.store")
 
 local M = {}
-
---- Ask before deleting anything.
----@return table[]|nil ops  nil means the write was cancelled
-local function confirm_deletes(ops)
-  local deletes = {}
-  for _, op in ipairs(ops) do
-    if op.kind == "delete" then
-      table.insert(deletes, op)
-    end
-  end
-  if #deletes == 0 or not config.options.confirm_delete then
-    return ops
-  end
-
-  local names = {}
-  for i, op in ipairs(deletes) do
-    names[i] = "  - " .. tostring(op.content)
-  end
-  local msg = ("Delete %d task%s from Todoist?\nThis removes %s for everyone the project is shared with.\n\n%s")
-    :format(#deletes, #deletes == 1 and "" or "s", #deletes == 1 and "it" or "them", table.concat(names, "\n"))
-
-  local choice = vim.fn.confirm(msg, "&Delete\nSkip the deletes, apply the &rest\n&Cancel the write", 3, "Question")
-  if choice == 1 then
-    return ops
-  end
-  if choice == 2 then
-    local kept = {}
-    for _, op in ipairs(ops) do
-      if op.kind ~= "delete" then
-        table.insert(kept, op)
-      end
-    end
-    return kept
-  end
-  return nil
-end
 
 local BATCH = 100
 
@@ -158,18 +121,12 @@ end
 
 --- Send ops to Todoist.
 ---@param ops table[]
----@param done fun(result: table|nil, err: string|nil)
----  result.ops     the ops that were sent, which "skip the deletes" makes
----                 fewer than were asked for
+---@param done fun(result: table)
+---  result.ops     the ops that were sent
 ---  result.failed  { [op] = why } for each one that did not land
 ---  result.errors  the same, as messages
 ---  result.ids     { [temp_id] = id } for each task created
 function M.apply(ops, done)
-  ops = confirm_deletes(ops)
-  if not ops then
-    return done(nil, "write cancelled")
-  end
-
   local pending = commands_for(ops)
   local ids, failed, errors = {}, {}, {}
 

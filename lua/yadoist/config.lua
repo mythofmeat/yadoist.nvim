@@ -8,9 +8,12 @@ local defaults = {
     return vim.env.TODOIST_API_TOKEN
   end,
 
-  -- Deleting a line deletes the task for everyone the project is shared with,
-  -- so ask first.
-  confirm_delete = true,
+  -- Before a write that could surprise you, :w lists everything it is about
+  -- to send and asks: when it deletes a task (for everyone the project is
+  -- shared with), renames a project or section, deletes or completes
+  -- subtasks the view does not show, or moves tasks after a heading line was
+  -- deleted. "always" asks before every write; false never asks.
+  confirm = true,
 
   -- Todoist creates any label it has not seen, so a typo like @erand would
   -- quietly become a new label. By default :w refuses instead, the same way it
@@ -39,7 +42,12 @@ local defaults = {
 M.options = vim.deepcopy(defaults)
 
 function M.setup(opts)
-  M.options = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
+  opts = opts or {}
+  M.options = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts)
+  -- confirm_delete = false, from when only deletes were asked about.
+  if opts.confirm == nil and opts.confirm_delete == false then
+    M.options.confirm = false
+  end
 end
 
 --- Resolve the token.

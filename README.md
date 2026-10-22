@@ -222,6 +222,27 @@ the way it does after `:e`, so it never walks back into an older list.
 
 ## Writing
 
+Before a write that could surprise you, `:w` lists everything it is about to
+send, the way oil.nvim does, and asks:
+
+```
+Send 3 changes to Todoist?
+
+  change    "Buy milk": date, labels, title
+  complete  "Plan the move", with 2 subtasks this view hides: Book a van, Pack
+  delete    "Old task"
+
+Deleting a task removes it for everyone its project is shared with.
+[S]end, Send all but the [d]eletes, [C]ancel:
+```
+
+It asks when the write deletes a task, renames a project or section, deletes
+or completes subtasks the view does not show (in Todoist a task takes its
+subtasks with it, and a parent drawn in `overdue` only for context may have
+others), or moves tasks after a heading line was deleted, which drops them
+under the heading above. Set `confirm = "always"` to see the list before every
+write, or `false` never to be asked.
+
 Nothing is sent until you `:w`, and then everything goes in one request
 through Todoist's Sync API. The same request reads back whatever has changed,
 so the buffer is redrawn from Todoist's answer to the write itself. `:w` waits
@@ -251,9 +272,11 @@ require("yadoist").setup({
   -- A string, or a function returning one.
   token = function() return vim.env.TODOIST_API_TOKEN end,
 
-  -- Deleting a line deletes the task for everyone the project is shared with,
-  -- so :w asks first and lists exactly what is about to go.
-  confirm_delete = true,
+  -- Before a write that could surprise you, :w lists everything it is about
+  -- to send and asks first: see "Writing". "always" asks before every write,
+  -- false never asks. (confirm_delete = false, from older versions, still
+  -- means false.)
+  confirm = true,
 
   -- Todoist creates any label it has not seen, so :w refuses a label that does
   -- not exist yet rather than turning a typo like @erand into a new one.
